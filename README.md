@@ -4,7 +4,7 @@
 
 ## 设计文档
 
-- [技术方案与总体设计](docs/architecture/technical-design.md)：Gateway、Process、Frontend 分层，统一设备能力模型、协议适配、订阅与下行控制、动态脚本、Linux/Kubernetes 部署及实施阶段。
-- 后续模块设计放在 `docs/modules/`，例如 Gateway、协议适配、设备模型、脚本运行时和前端。
+- [技术方案与总体设计](docs/architecture/technical-design.md)：Gateway、Process、Frontend 分层，统一设备能力模型、协议与视觉源适配、受限规则 DSL、Linux/Kubernetes 部署及实施阶段。
+- 后续模块设计放在 `docs/modules/`，例如 Gateway、协议适配、设备模型、规则运行时和前端。
 
 整体系统架构和跨工程职责边界由 `design-docs` 工程维护；本工程维护连接器自身的技术方案、模块接口和实现设计。
