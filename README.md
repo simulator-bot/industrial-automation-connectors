@@ -1,10 +1,12 @@
 # Industrial Automation Connectors
 
-工业自动化连接器负责接入 PLC、半导体设备、机器人、仪器、工厂摄像头和其他自动化系统，并向上层提供统一的设备、点位、视觉信号、事件和操作能力。原始视频流通过独立媒体通道接入，视觉算法由连接器外的视觉服务承载。
+**English** | [简体中文](README.zh-CN.md)
 
-## 设计文档
+Connectors integrate PLCs, semiconductor equipment, robots, instruments, factory cameras, and other industrial systems. They expose common equipment, points, visual signals, events, and operations. Raw video travels over a dedicated media path. External vision services run visual algorithms.
 
-- [技术方案与总体设计](docs/architecture/technical-design.md)：Gateway、Process、Frontend 分层，统一设备能力模型、协议与视觉源适配、受限规则 DSL、Linux/Kubernetes 部署及实施阶段。
-- 后续模块设计放在 `docs/modules/`，例如 Gateway、协议适配、设备模型、规则运行时和前端。
+## Design documents
 
-整体系统架构和跨工程职责边界由 `design-docs` 工程维护；本工程维护连接器自身的技术方案、模块接口和实现设计。
+- The [technical design](docs/architecture/technical-design.md) covers the Gateway, Process, and Frontend, the equipment capability model, protocols, subscriptions and commands, bounded rules, Linux and Kubernetes deployment, and rollout.
+- Subsequent module designs belong under `docs/modules/`, including Gateway, protocol adapters, equipment models, rules runtime, and frontend.
+
+The design-docs project owns system architecture and cross-project boundaries. This project owns connector technology, module interfaces, and implementation design.

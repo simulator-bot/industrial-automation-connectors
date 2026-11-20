@@ -1,273 +1,190 @@
-# 工业自动化连接器技术设计
+# Industrial Automation Connectors: Technical Design
 
-> 状态：架构方案草案 v0.3
-> 所属工程：`industrial-automation-connectors`
-> 文档边界：定义系统级职责、服务边界、统一能力模型和技术选择。协议驱动内部类设计、配置字段、具体 API 契约和实现细节由 `industrial-automation-connectors` 工程中的后续模块设计维护。
+**English** | [简体中文](technical-design.zh-CN.md)
 
-## 1. 背景与目标
+Architecture draft v0.3 for industrial-automation-connectors. This document defines system responsibilities, service boundaries, the shared capability model, and technology options. Subsequent module designs specify driver internals, configuration fields, API contracts, and implementation details.
 
-工业自动化连接器负责连接 PLC、半导体设备、机器人、仪器、工厂摄像头和既有自动化系统，为上层提供统一的设备能力、点位数据、事件、视觉信号和可执行操作。系统需要支持长期运行的现场连接、订阅式采集、受控下行，并为工程人员提供界面和受限规则 DSL 来组合订阅数据和操作。
+## 1. Goals
 
-本设计采用三层职责划分：
+Connect PLCs, semiconductor equipment, robots, instruments, factory cameras, and existing automation systems. Expose equipment capabilities, points, events, visual signals, and operations. Support long-running sessions, subscriptions, controlled commands, and engineering tools for composing bounded rules.
 
-1. **Gateway（设备网关）**：专注于设备协议会话和现场数据面，保持长连接并运行协议适配器。
-2. **Process（业务处理层）**：专注于管理、采集编排、业务逻辑、权限与下行控制。这里的 Process 指平台业务处理服务，不是操作系统进程管理器。
-3. **Frontend（前端层）**：提供设备、点位、订阅、规则和运行状态的配置、调试与监控界面。
+1. **Gateway** owns device protocol sessions and field data transport. It maintains connections and runs adapters.
+2. **Process** is the application service for management, acquisition orchestration, business logic, permissions, and commands.
+3. **Frontend** provides configuration, debugging, and monitoring for equipment, points, subscriptions, rules, and runtime health.
 
-核心目标：
+Normalize capabilities to the extent each protocol allows. Keep sessions independent of the UI and rule runtime. Support periodic sampling, change subscriptions, events, reads, writes, and function calls. Separate high-bandwidth video from structured analytics. Make rules reviewable, testable, releasable, and reversible. Subject field commands to backend identity, policy, configured interlocks, and audit. Deploy on Linux and later Kubernetes, with edge Gateway and central Process where needed. Agents and model services use formal APIs or events. Protocol connections and internal databases stay private.
 
-- 通过协议和视觉源适配层接入不同设备及摄像头，并在协议能力允许的范围内统一为设备、点位、事件、视觉信号和函数调用。
-- 长连接与设备会话不依赖管理界面或规则执行服务的生命周期。
-- 支持周期采集、变化订阅、设备事件、主动读取、写入点位和调用设备函数。
-- 支持接入摄像头原始流或其结构化分析事件；原始视频流和低带宽结构化信号走不同的数据路径。
-- 允许用户把订阅事件映射为可审查、可测试、可发布、可回滚的处理逻辑。
-- 所有真实设备下行都经过后端权限、策略、联锁（如已配置）和审计检查。
-- 在 Linux 上部署，并支持后续运行在 Kubernetes；允许边缘 Gateway 与中心 Process 分开部署。
-- Agent/模型服务通过正式 API 或事件接口使用连接器能力，不直接持有协议连接或访问连接器内部数据库。
+## 2. Scope
 
-## 2. 范围与非目标
+### 2.1 Connector responsibilities
 
-### 2.1 本工程负责
+- Field connections, sessions, acquisition, event conversion, and equipment operation interfaces.
+- Camera and machine vision source management, stream metadata, and association of visual events with equipment and production objects.
+- Secure delivery of video to separate media or inference services.
+- Equipment, point, and function descriptions and mappings to protocol addresses, variables, and messages.
+- Gateway lifecycle, configuration delivery, connection status, acquisition jobs, and command results.
+- Connector management APIs, bounded rule execution, audit, and operational metrics.
 
-- 现场协议连接、设备会话、数据采集、事件转换和设备操作接口。
-- 工厂摄像头/机器视觉数据源的接入管理、流信息/元数据接收，以及视觉事件与设备/生产对象的关联。
-- 将视频流安全地交付给独立的视频处理或视觉推理服务；不在连接器内实现图像识别模型。
-- 设备/点位/函数的统一能力描述及其到协议地址、变量和消息的映射。
-- Gateway 生命周期、配置下发、连接状态、采集任务执行和命令结果反馈。
-- 连接器自身的管理 API、规则运行边界、审计信息和运维指标。
+### 2.2 External responsibilities and limits
 
-### 2.2 本工程不负责
+Agent inference, planning, and training can run in a separate Python service. Global identity, cross-domain approval, and platform workflows have separate owners. Connectors integrate authentication and enforce the authorization context they receive. The industrial world model defines process semantics and simulation behavior. External vision services perform recognition, tracking, and defect detection. PLC safety circuits, emergency stops, interlocks, and certified controls retain their local safety roles. Check protocol compatibility against device firmware, licensing, configuration, and site integration.
 
-- Agent 的模型推理、规划和训练。Agent 可由独立 Python 等服务承载。
-- 全局用户身份系统、跨业务域审批和平台级工作流；连接器提供鉴权集成点并强制执行收到的授权上下文。
-- 定义工业世界模型。连接器设备模型描述可观测和可操作能力，不代替工艺语义、生产流程或仿真模型。
-- 在连接器内部实现图像识别、目标跟踪或缺陷检测模型；视觉算法由独立视觉服务承载，连接器负责数据源接入与信号契约。
-- 替代 PLC 安全回路、急停、设备联锁和经安全认证的控制系统。软件策略检查不能代替设备本地安全机制。
-- 保证任意协议在所有厂商设备上完全兼容。实际能力由具体设备固件、授权、配置和现场联调决定。
-
-## 3. 总体架构
+## 3. Architecture
 
 ```mermaid
 flowchart LR
-    subgraph OT[现场网络 / OT Zone]
-        D[PLC / 半导体设备 / 仪器 / 机器人]
-        C[工厂摄像头 / 机器视觉相机]
-        G[Gateway 实例]
-        A[设备协议适配器<br/>OPC UA / SECS-GEM / Modbus / ADS / ...]
-        CA[摄像头/视觉源适配器<br/>ONVIF / RTSP / GenICam / ...]
-        D <--> A <--> G
-        C <--> CA <--> G
+    subgraph OT[Field network / OT zone]
+        D[PLC / semiconductor equipment / instruments / robots] <--> A[OPC UA / SECS-GEM / Modbus / ADS adapters] <--> G[Gateway]
+        C[Industrial cameras] <--> CA[ONVIF / RTSP / GenICam adapters] <--> G
     end
-
-    subgraph Platform[连接器平台 / IT Zone]
-        P[Process API 与管理服务]
-        O[采集与命令编排]
-        S[规则执行 Worker]
-        DB[(配置 / 模型 / 规则版本 / 审计存储)]
-        B[(事件与任务总线)]
-        P --> O
-        P <--> DB
-        O <--> B
-        B <--> S
+    subgraph Platform[Connector platform / IT zone]
+        P[Process API and management] --> O[Acquisition and command orchestration]
+        P <--> DB[(Configuration / models / rules / audit)]
+        O <--> B[(Event and task bus)]
+        B <--> S[Rule worker]
     end
-
-    subgraph Vision[视觉处理层（可部署在边缘或中心）]
-        V[视觉推理 / 视频处理服务]
+    subgraph Vision[Edge or central vision processing]
+        V[Vision inference and media services]
     end
-
-    UI[Web 前端] -->|HTTPS / WebSocket| P
-    G -->|配置 / 心跳 / 命令| P
-    G -->|遥测 / 事件 / 命令结果| B
-    C -. 视频流（独立媒体通道） .-> V
-    CA -->|摄像头元数据 / 原生分析事件| B
-    V -->|结构化视觉信号 / 证据引用| B
-    P -->|流地址 / 授权与任务配置| V
-    O -->|授权后的命令| G
-    S -->|类型化命令意图| O
-    AG[Agent / 世界模型 / MES 等上层系统] <-->|API / 事件契约| P
+    UI[Web frontend] -->|HTTPS / WebSocket| P
+    G -->|Configuration / heartbeat / commands| P
+    G -->|Telemetry / events / results| B
+    C -. Dedicated media path .-> V
+    CA -->|Metadata / native analytics| B
+    V -->|Visual signals / evidence references| B
+    P -->|Stream references / authorization / jobs| V
+    O -->|Authorized commands| G
+    S -->|Typed command intents| O
+    AG[Agent / world model / MES] <-->|API / event contract| P
 ```
 
-视频流不得经过普通点位事件总线。连接器只管理数据源身份、访问授权、流地址/会话及元数据；原始媒体经独立媒体通道交给视频或视觉服务。视觉服务可以是本系统后续工程，也可以是已有 VMS/边缘 AI 系统；连接器通过版本化接口接收结构化结果。
+Keep video off the point event bus. Manage source identity, access, stream addresses or sessions, and metadata in the connector. Route media separately to a new vision service or an existing VMS/edge AI system. Receive structured results over versioned interfaces.
 
-### 3.1 Gateway：设备数据面
+### 3.1 Gateway data plane
 
-Gateway 是靠近设备网络部署的长运行服务，负责：
+Run the Gateway near the equipment. Establish, maintain, reconnect, and close protocol sessions. Instantiate adapters, monitors, and acquisition tasks from assigned configuration. Map data to point and device events, connection status, and command results. Where deployment policy allows, manage camera state, sessions, credential references, and native analytics. Relay or proxy streams separately from point buffers. Execute authorized writes and invocations, return structured results, and buffer recoverable data during brief outages. Expose queue depth, drops, and data freshness.
 
-- 建立、保活、重连和关闭协议会话。
-- 根据下发配置创建协议适配器实例、设备会话、点位监视和采集任务。
-- 解析协议数据，转换成统一的点位事件、设备事件、连接状态和命令结果。
-- 在部署策略允许时，维护摄像头接入状态、流会话/凭据引用和摄像头原生分析元数据；只转发媒体流或代理流，不将视频帧作为点位事件缓存。
-- 接收授权命令，执行协议写入或函数调用，并返回结构化结果。
-- 缓冲短暂网络中断期间可恢复的数据，暴露队列深度、丢弃量和数据时效。
+Process owns authoritative configuration, editable rules, and user write authorization. A Gateway may cache the last valid signed or versioned configuration to maintain existing sessions while the control plane is unreachable. Downlink authorization remains in force. Design for infrequent restarts and for recovery after upgrades, node failures, or rescheduling. Restore sessions and tasks, detect disconnection, and deduplicate commands.
 
-Gateway 不承载用户可编辑的业务规则，不保存平台权威配置，不自行决定某个用户是否有权写入设备。它可以缓存最后一份签名/带版本的有效配置，以便控制面暂时不可达时保持现有会话；缓存配置不可绕过下行授权策略。
+### 3.2 Process management plane
 
-“平时不重启”应作为运维目标和生命周期设计原则，而非不可重启的假设。升级、节点故障和 K8s 调度仍可能造成实例重建，因此必须支持会话恢复、任务重新下发、断线状态识别和命令幂等/去重。
+- Track Gateway registration, heartbeat, health, software and configuration versions.
+- Maintain sites, Gateways, equipment, connections, points, functions, and subscriptions.
+- Register cameras and sources, authorize streams, and relate sources to stations and equipment.
+- Create, update, pause, resume, and assign acquisition tasks.
+- Consume equipment events to trigger defined logic or forward them to other systems.
+- Receive and distribute visual signals, correlating by camera, time, region, production object, and device point.
+- Check command identity, role, device/point permissions, bounds, rate, interlocks, and approval.
+- Record command request, progress, protocol result, timeout/cancellation, and audit.
+- Manage rule versions, type checks, dry runs, publication, disablement, and rollback.
 
-### 3.2 Process：管理与业务处理面
+Use a versioned control contract between Process and Gateway. Exchange health, configuration, events, and commands through interfaces. Keep the database private to Process and Gateway state private to Gateway.
 
-Process 提供连接器平台 API 和业务编排，负责：
+### 3.3 Frontend
 
-- Gateway 注册、心跳、版本、健康状态及配置版本管理。
-- 站点、Gateway、设备、连接、点位、函数和订阅模型的维护。
-- 摄像头/视频源登记、媒体流授权和视觉信号来源管理，并把相机、产线工位与设备实体关联。
-- 采集任务创建、更新、暂停、恢复和分配。
-- 消费点位/设备事件，触发用户定义的逻辑或转发到其他系统。
-- 接收、关联和分发视觉信号；支持按 camera、时间、区域和生产对象关联视觉信号与设备点位。
-- 对下行命令执行身份、角色、设备/点位权限、参数范围、速率限制、联锁条件和审批状态检查。
-- 保存命令请求、执行进度、协议结果、超时/取消结果和审计记录。
-- 管理规则版本、类型校验、试运行、发布、停用和回滚。
+As a Process API client, show Gateway and equipment connectivity, protocol versions, heartbeats, and errors. Browse the device tree, points, functions, types, and access capabilities. Show source status, authorized preview/replay, visual timelines, and correlated equipment data. Provide point reads, subscription tests, trends, event inspection, and acquisition configuration. Provide a visual rule editor, controlled JSON/YAML views, type checks, sample replay, logs, version diffs, publication, and rollback. Show authorized command targets, parameters, risks, and results. Render role-based controls and repeat authorization checks in the backend.
 
-Process 与 Gateway 之间使用版本化控制契约。Gateway 不需要直连数据库；Process 也不访问 Gateway 内部状态，只通过健康、配置、事件和命令接口交互。
+## 4. Deployment and operation
 
-### 3.3 Frontend：配置与运维界面
+Use common protocols and domain contracts for two topologies. Co-locate Gateway and Process at a factory or edge cluster to reduce latency and WAN dependence, or place Gateway on site and Process and UI centrally. In the latter case, Gateway initiates a protected outbound connection into the central system.
 
-前端是 Process API 的客户端，应支持：
+For Kubernetes deployments:
 
-- Gateway 和设备连接状态、协议版本、最近心跳及错误信息查看。
-- 设备树、点位/函数浏览、类型和读写能力查看。
-- 摄像头及视频源状态查看、授权的视频预览/回放入口、视觉事件时间线，以及视觉信号与设备数据的关联查看。
-- 单点读取、订阅测试、趋势/事件检查及采集任务配置。
-- 可视化规则编辑器及受控 JSON/YAML 规则查看、类型校验、样例事件试运行、日志查看、版本差异、发布和回滚。
-- 受授权的下行操作入口；危险操作展示目标、参数、风险级别和执行结果。
-- 角色和权限控制的 UI 呈现。前端控制只用于交互，后端仍需重新校验。
+- Use node affinity, dedicated nodes, or explicit device mappings for field subnets, serial ports, and protocol discovery. Verify Pod access to field broadcasts and serial hardware.
+- Map serial device nodes explicitly. Restrict privileges and record node, baud, parity, and exclusive ownership.
+- Assign one active Gateway owner per session. Use leases and fencing tokens during HA takeover to prevent concurrent device writers.
+- Drain stateful Gateways gracefully. Stop accepting new commands, mark sessions migrating or closing, and report outstanding commands before exit.
+- Separate service liveness, readiness, and per-device health. A single disconnected device should not restart a healthy Gateway.
+- Run non-root images with read-only root filesystems, resource quotas, least-privilege network access, and explicitly declared protocol ports.
+- Isolate rule workers from Gateway with bounded CPU, memory, concurrency, event rates, and queue lengths. Keep them off the OT network and deny arbitrary Internet access by default.
 
-## 4. 部署拓扑与运行模式
+## 5. Unified equipment capability model
 
-系统支持两种逻辑拓扑，使用相同协议和领域契约：
+Expose capabilities through stable identifiers. Preserve protocol extensions for diagnostics and protocol-specific features.
 
-1. **边缘同站点部署**：Gateway 与 Process 部署在工厂网络或边缘集群内，减少设备访问延迟和广域网依赖。
-2. **边缘 Gateway + 中心 Process**：Gateway 在现场网络内，Process/前端在中心集群。Gateway 主动发起受保护的出站连接，避免为中心服务开放到 OT 网络的入站访问。
+### 5.1 Entities
 
-Kubernetes 部署注意事项：
-
-- Gateway 需要按现场网段、串口设备和协议要求使用节点亲和性、专用节点或设备映射。不要假定 Pod 网络能自动访问串口或现场广播网络。
-- 串口类协议需显式映射设备节点并限制容器权限；记录设备节点、波特率、校验位和独占策略。
-- 对每个会话分配唯一的活跃 Gateway 所有者。HA 接管需使用租约/租期和 fencing token，防止两个 Gateway 同时写同一设备。
-- 对有状态 Gateway 使用优雅退出：停止接收新命令、标记会话迁移/关闭、报告未完成命令，然后终止。
-- Liveness 只检查进程是否可工作，不应因单台设备暂时掉线而触发 Gateway 重启；readiness 和设备连接状态分开表达。
-- 容器镜像以非 root、只读根文件系统、资源配额和最小网络权限运行。协议所需端口由部署配置明确开放。
-- 规则 Worker 独立于 Gateway，限制 CPU、内存、并发、事件速率和队列长度，并且无 OT 网段路由。默认不允许 Worker 访问任意互联网地址。
-
-## 5. 统一设备能力模型
-
-统一模型的目的是让上层使用设备能力，而不必理解协议报文；协议扩展信息仍需保留，以支持诊断和协议特有功能。
-
-### 5.1 核心实体
-
-| 实体 | 关键属性 | 说明 |
+| Entity | Key attributes | Meaning |
 | --- | --- | --- |
-| Site | `siteId`、名称、时区、网络/安全域 | 现场或逻辑工厂范围。 |
-| Gateway | `gatewayId`、站点、版本、状态、能力、配置版本 | 运行协议连接的边缘节点。 |
-| Connection | `connectionId`、协议类型、端点、凭据引用、连接状态 | 协议会话或设备连接配置；机密只存储为安全引用。 |
-| Device | `deviceId`、名称、厂商、型号、序列号、连接、标签 | 设备逻辑身份；断线后身份仍保持。 |
-| Camera / VideoSource | `sourceId`、相机类型、站点/工位、流配置引用、能力、状态 | 摄像头或机器视觉数据源；流地址和凭据不作为普通点位暴露。可与一个或多个设备/工位关联。 |
-| VideoStream | `streamId`、`sourceId`、媒体类型、URI/会话引用、编码、访问策略 | 视频媒体面的流/会话描述；只传递元数据与受控引用，不进入普通遥测事件总线。 |
-| Point | `pointId`、路径、数据类型、单位、读/写能力、协议地址、质量 | 变量、状态量、测量值或可写设定值。 |
-| Function | `functionId`、输入/输出 schema、风险级别、超时、幂等策略 | 设备可执行方法/命令，不等同于普通点位写入。 |
-| Subscription | `subscriptionId`、目标、触发方式、周期/死区、投递策略 | 点位变化、周期读取或设备事件订阅。 |
-| Event | 事件 ID、目标、值、来源时间、接收时间、质量、序列号 | 统一遥测、状态、告警或协议事件封装。 |
-| VisualSignal | 信号 ID、来源、时间、类型、对象/区域、置信度、证据引用、模型版本 | 结构化视觉结果或摄像头原生分析事件；不包含原始帧内容。 |
-| Command | 命令 ID、目标、操作、参数、发起者、策略上下文、状态 | 统一下行请求及其执行生命周期。 |
+| Site | siteId, name, timezone, network/security domain | Physical or logical plant |
+| Gateway | gatewayId, site, version, status, capabilities, config version | Edge node running sessions |
+| Connection | connectionId, protocol, endpoint, credential reference, status | Session configuration with protected secret references |
+| Device | deviceId, name, vendor, model, serial, connection, tags | Stable logical identity across disconnections |
+| Camera / VideoSource | sourceId, type, station/site, stream config reference, capabilities, status | Source associated with one or more stations/devices. Protect addresses and credentials separately from points. |
+| VideoStream | streamId, sourceId, media type, URI/session reference, encoding, access policy | Media-plane session metadata with controlled references |
+| Point | pointId, path, type, units, read/write access, protocol address, quality | Variable, state, measurement, or writable setpoint |
+| Function | functionId, input/output schema, risk, timeout, idempotency | Executable device method or command |
+| Subscription | subscriptionId, target, trigger, interval/deadband, delivery | Change, periodic, or device-event acquisition |
+| Event | event ID, target, value, source/ingestion time, quality, sequence | Telemetry, state, alarm, or protocol event |
+| VisualSignal | ID, source, time, type, object/region, confidence, evidence reference, model version | Structured analytics without raw frames |
+| Command | ID, target, operation, parameters, initiator, policy context, status | Downlink request and execution lifecycle |
 
-### 5.2 点位值与质量
+### 5.2 Point values and quality
 
-每个值至少包含：
+Every value includes deviceId, pointId, value, and declared type. Preserve sourceTimestamp when provided and ingestTimestamp when received by Gateway. Use quality values GOOD, UNCERTAIN, BAD or extensible standard codes with protocol status and diagnostics. Include sequence or version when available for duplicates, ordering, and gaps. Carry schemaVersion, gatewayId, and connectionId for provenance and mapping versions.
 
-- `deviceId`、`pointId`、值和声明的数据类型。
-- `sourceTimestamp`（设备/协议侧时间，如可获得）与 `ingestTimestamp`（Gateway 接收时间）。
-- `quality`：`GOOD`、`UNCERTAIN`、`BAD` 或可扩展的标准枚举；附带协议状态码和诊断详情。
-- `sequence` 或版本信息（协议可用时），用于识别重复、乱序和缺口。
-- `schemaVersion`、`gatewayId`、`connectionId`，用于追踪来源和映射版本。
+Support booleans, signed and unsigned integers, floats, strings, byte arrays, enumerations, timestamps, and structures. Declare precision, endianness, scaling, units, and null behavior in point mappings.
 
-值的数据类型应覆盖布尔、整数、有符号/无符号、浮点、字符串、字节数组、枚举、时间戳和结构化类型。精度、端序、缩放、单位和空值行为由点位映射明确定义，不得靠 UI 猜测。
+The world model binds deviceId, pointId, and mapping version to equipment instances and follows event references for machining and handoff replay. Keep distinct sources and times for commands, feedback, and material transfer. Pass workpiece or order IDs when provided. The world model decides whether process relations support association when IDs are absent and defines action, waiting, and cycle-time semantics.
 
-世界模型使用 `deviceId`、`pointId` 和映射版本绑定设备实例，引用源事件回放加工与交接。连接器保留命令、执行反馈和物料交接信号各自的来源与时间。如源系统提供工件或工单标识，随对应事件传递；缺失时由模型侧根据工艺关系判断能否关联。设备动作、等待原因和节拍口径由世界模型定义。
+### 5.3 Addresses and capabilities
 
-### 5.3 协议地址和能力
+Keep OPC UA NodeIds, Modbus regions/offsets/register types, ADS symbols, and SECS/GEM SVID/CEID/RCMD in a versioned protocolConfig extension validated by the adapter. Consumers use pointId. Declare device and point read/write access, available subscription modes, functions, maximum sampling rate, and protocol limits. Identify polling-based subscriptions and actual sampling semantics.
 
-点位保留协议适配器的地址映射，例如 OPC UA NodeId、Modbus 区域/偏移/寄存器类型、ADS 符号名、SECS/GEM SVID/CEID/RCMD。地址存放在带 schema 版本的 `protocolConfig` 扩展中，由适配器校验；上层逻辑使用统一 `pointId`。
+VisualSignal has its own contract. Suggested fields include cameraId/sourceId, eventTime, ingestTime, signalType, class/label, confidence, trackId, boundingBox/region, device/station IDs, controlled evidence image/clip references, and model name/version. Process can map a persistent scalar such as occupancy or defect count to a source-labeled virtual Point. Retain raw detections as events.
 
-每个设备和每个点位需声明能力：是否可读、支持的订阅模式、是否可写、函数列表、最大采样速率及协议限制。上层不应假设所有协议支持真正的服务端变化订阅；适配器可把定时轮询包装为统一订阅，并标示实际采样语义。
+## 6. Protocol adapters
 
-视觉信号采用单独的 `VisualSignal` 契约。建议字段包括 `cameraId/sourceId`、`eventTime`、`ingestTime`、`signalType`、`class/label`、`confidence`、`trackId`、`boundingBox/region`、相关设备/工位 ID、证据图片/视频片段的受控引用，以及视觉模型名称和版本。若视觉处理结果是可持续观察的标量（例如工位人数或缺陷计数），Process 可以把它映射成带来源标记的虚拟 Point；原始检测记录仍保留为事件。
+### 6.1 Adapter contract
 
-## 6. 协议适配层
+Adapters hide protocol stack and vendor differences. Provide connect/disconnect/health for sessions, browse/describe where discovery exists, read for one or several points, subscribe/unsubscribe for changes or events with Gateway polling fallback, write for writable points, and invoke for functions or protocol commands. Decode/map raw values, codes, alarms, and errors. Expose protocol status, redacted recent message summaries, error codes, and counters through diagnostics.
 
-### 6.1 适配器职责与统一操作
+Use an asynchronous, cancellable SPI. Specify thread safety, timeout, retries, backpressure, maximum concurrency, and resource cleanup. Gateway owns adapter lifecycle including background tasks. Package and version adapters by protocol/vendor. Initially ship static dependencies with the image and disallow arbitrary online third-party JAR loading. Consider an out-of-process plugin contract for independent upgrades or additional languages. Limit plugin network and downlink permissions.
 
-协议适配器封装协议栈和厂商差异。系统级适配器能力包括：
+### 6.2 Camera and vision integration
 
-- `connect / disconnect / health`：会话生命周期和状态。
-- `browse / describe`：在协议支持时发现设备节点、点位或方法。
-- `read`：读取一个或多个点位。
-- `subscribe / unsubscribe`：订阅值变化或设备事件；不支持时由 Gateway 采集调度器轮询。
-- `write`：写入可写点位。
-- `invoke`：调用设备函数或协议命令。
-- `decode / map`：将原始数据、状态码、告警和异常映射为统一模型。
-- `diagnostics`：暴露协议状态、最近报文摘要、错误码和计数器；敏感载荷按策略脱敏。
+1. **Discover and control.** Discover cameras, inspect capabilities/configuration, and manage clocks and stream profiles. Expose PTZ or presets as authorized, audited Functions through the common command gateway.
+2. **Deliver media.** Obtain RTSP/RTP or machine vision transport information. Deliver streams securely to the media or vision service. A dedicated optional media gateway/relay can support multiple consumers, isolation, or transcoding.
+3. **Normalize signals.** Receive native analytics or external inference metadata, map them to VisualSignal, and publish to Process or the event bus.
 
-适配器 SPI 应异步化、可取消，并明确线程安全、超时、重试、背压、最大并发和资源关闭语义。Gateway 统一管理适配器生命周期，适配器不得创建脱离生命周期管理的后台线程。
+Configure frame/clip bandwidth, latency, replay, and retention separately. Keep frames and base64 images out of ordinary events and rule contexts. Ingest native motion, occlusion, and counts via camera adapters. Receive external detections/classifications via a vision event API or adapter. External services own recognition, tracking, OCR, defect detection, and inference. Connectors provide access, authorization, normalization, and correlation. Associate signals with PLC/robot events by source, time and line/station/device IDs, and reference clips with offsets for evidence. Use secret or temporary signed references for credentials, URIs, and evidence. Keep durable cleartext addresses out of UI, rules, logs, and long-lived events. Protect personnel and process privacy through access control, audit, and configurable retention for preview, export, and replay.
 
-适配器按协议/厂商分包并版本化。第一阶段采用随 Gateway 镜像发布的静态依赖，避免在线加载任意第三方 JAR。若将来需要独立升级或多语言实现，再定义进程外插件协议；插件不能拥有未授权的任意网络或下行权限。
+Evaluate ONVIF Profile T for advanced IP streaming and Profile M for analytics events and metadata. Evaluate GenICam/GenTL and vendor transport layers for machine vision. Verify the specific model's conformance, Go/Linux SDK support, native dependencies, and licenses.
 
-### 6.2 摄像头与视觉源接入
+### 6.3 Initial protocol candidates
 
-连接器把摄像头作为数据源管理，但不把摄像头视频等同于点位采集。接入分为三类能力：
+Validate each candidate against standards, target model, firmware, vendor documentation, licensing, and field tests.
 
-1. **发现与控制**：发现相机、查询能力/配置、管理时钟和流 Profile；若开放 PTZ、预置位等控制，将其建模为有权限和审计要求的 `Function`，经统一命令网关执行。
-2. **媒体交付**：取得 RTSP/RTP 或机器视觉传输层的流信息，并按部署拓扑将媒体安全交给视觉/视频服务。需要多消费者、网络隔离或流协议转换时，可部署独立的 Media Gateway/Relay；这属于 Gateway 数据面的可选专用服务。
-3. **结构化信号**：接收摄像头内置分析或外部视觉服务产生的事件/元数据，将其规范化为 `VisualSignal` 后投递 Process/事件总线。
+| Protocol/source | Go/Linux option and use | Verification |
+| --- | --- | --- |
+| OPC UA | MIT-licensed gopcua/opcua as client, with server publication worth assessing | Primarily UA Binary over TCP. Check services, security policies, certificate lifecycle, subscription recovery/queueing, method calls, custom types, and interoperability. Some services and security modes are unsupported or untested. |
+| SECS/GEM | go-secs for HSMS/SECS encoding and decoding. go-factory-io is a higher-level GEM/300 mm candidate. | Codec support alone does not establish E30/GEM behavior. The higher-level candidate reports simulator validation. Verify state machine, messages, timeouts, vendor variations, GEM300 scope, and SEMI licensing on target tools. |
+| Modbus TCP/RTU | goburrow/modbus for coils/registers over TCP, RTU or ASCII | Check byte/word order, serial locks, RTU timeouts/retries, batch boundaries, exceptions, and model-specific register maps. |
+| Beckhoff TwinCAT ADS | Beckhoff native ADS library via cgo or an isolated adapter for symbol reads/writes, notifications and PLC variables | Check Linux distro, ARM/x86 images, AMS Net ID/routing, credentials/security, notification recovery, toolchain, and Kubernetes. Consider isolated adapters or equipment OPC UA/Modbus if native dependencies are unstable. |
+| IP cameras | use-go/onvif for discovery, configuration and events, gortsplib for RTSP, optional existing VMS | Verify actual T/M profile support, authentication, transport, codecs, clocks, metadata format, recovery, concurrent streams, and deployment security. |
+| Machine vision | GenICam/GenTL Producer or vendor SDK, possibly in a separate native process, for discovery, acquisition control, features, image and chunk data | Check GigE Vision, USB3 Vision or CoaXPress, bandwidth, trigger sync, producer, Linux/ARM support, SDK license and dependencies. Go may need cgo or IPC. |
+| Vision results | Versioned HTTP/gRPC, MQTT or ONVIF metadata for objects, counts, classifications and defects | Align time and coordinates, confidence, versions, idempotency, evidence, and equipment/station mappings. |
 
-数据路径和职责边界：
+The PLC vendor name in the initial discussion is provisionally interpreted as Beckhoff. If the site identifies a different vendor, evaluate the specific model and communications manual. Prefer available standard OPC UA or Modbus interfaces, isolating proprietary protocols in adapters. Modbus equipment still requires vendor addresses and scaling.
 
-- 视频帧/片段走媒体面，按带宽、延迟、回放和保留策略独立配置；禁止把视频帧或 base64 图像塞入普通事件总线或规则上下文。
-- 摄像头的运动、遮挡、计数等原生分析事件可由相机适配器接入；由外部推理服务产生的检测/分类结果经视觉事件适配器/API 接入。
-- 图像识别、目标跟踪、OCR、缺陷检测和模型推理属于独立视觉服务，不属于连接器职责。连接器负责源接入、流授权、结果归一化和信号关联。
-- 同一信号应能按 camera/source、时间戳、产线/工位/设备 ID 关联 PLC/机器人事件；需要时允许以片段引用和时间偏移回查原始证据。
-- 相机凭据、流 URI 和证据链接使用 Secret/短期签名引用；界面、规则、普通日志和长期事件中不得暴露长期有效的明文流地址。
-- 视频数据涉及人员/工艺隐私；保留、导出、预览和回放均需访问控制、审计和可配置的保留期限。
+### 6.4 Open-source dependency review
 
-首批标准方向：普通 IP 摄像头优先评估 ONVIF Profile T 的高级视频流能力和 Profile M 的分析元数据/事件；工业机器视觉相机评估 GenICam/GenTL 及相机厂商提供的 transport layer。实际设备是否符合对应 Profile/标准以及 Go/Linux SDK、原生依赖和 license，均需按型号验证。
+Before accepting a protocol library, camera SDK, or GenTL Producer, record license and transitive dependencies, maintenance and security response, supported subset, Linux architecture, sync/async behavior, recovery, performance and memory, diagnostics, test hardware/simulators, and replacement cost. A README capability label alone is insufficient production evidence.
 
-### 6.3 首批协议候选
+## 7. Acquisition, subscriptions, and events
 
-下表是候选库和主要风险，不是协议兼容性承诺。必须结合协议标准、具体设备型号、固件、厂商手册、授权要求和现场测试完成选型。
+Process stores subscriptions and assigns them to Gateways. Specify target, protocol mode, interval/deadband, queue policy, rate cap, start/end time, persistence, and consumption policy.
 
-| 协议/设备 | Go/Linux 候选 | 预期用途 | 需要重点验证 |
-| --- | --- | --- | --- |
-| OPC UA | [`gopcua/opcua`](https://github.com/gopcua/opcua)（MIT） | OPC UA Client 连接设备服务器；也可评估服务端能力发布。 | 项目当前聚焦 UA Binary over TCP；逐项核对所需服务、安全策略、证书生命周期、订阅恢复/队列、方法调用、自定义类型和目标设备互操作；README 标注部分服务/安全模式未支持或未测试。 |
-| SECS/GEM | [`go-secs`](https://github.com/arloliu/go-secs)；[`go-factory-io`](https://github.com/seikaikyo/go-factory-io) 作为更高层评估候选 | HSMS/SECS 编解码；候选高层实现包含 GEM 状态机及 300mm 扩展。 | 区分传输/编解码与完整 E30/GEM 语义。`go-factory-io` 自述目前在软件模拟器验证，未在生产设备验证；必须在目标半导体设备上逐项验证状态机、消息、超时、厂商差异和 GEM300 范围，并确认 SEMI 规范授权。 |
-| Modbus TCP/RTU | [`goburrow/modbus`](https://github.com/goburrow/modbus) | 读写线圈/寄存器；项目支持 TCP、RTU 和 ASCII。 | 端序/字序、串口锁、RTU 超时/重试、批量寄存器边界、异常响应和具体设备寄存器表。 |
-| 倍福（Beckhoff） TwinCAT ADS* | Beckhoff [`ADS`](https://github.com/Beckhoff/ADS) Linux 原生库，通过 cgo 或隔离适配器进程接入 | TwinCAT 符号读写、通知订阅和 PLC 变量交互。 | 验证 Linux 发行版、ARM/x86 镜像、AMS Net ID/路由、凭据和安全连接、通知恢复、cgo/toolchain 依赖及 K8s 部署；如原生依赖不稳定，可使用独立进程适配器或评估设备的 OPC UA/Modbus 接口。 |
-| IP 摄像头 | [`use-go/onvif`](https://github.com/use-go/onvif) + [`gortsplib`](https://github.com/bluenviron/gortsplib)；按需集成现有 VMS | ONVIF 发现/配置和事件，RTSP 媒体会话/流接入。 | Profile T/M 支持不是设备互操作的保证；验证设备 Profile、RTSP 认证/传输、编码、时钟、元数据格式、断线恢复、流并发和安全部署。 |
-| 工业机器视觉相机 | GenICam/GenTL Producer 或厂商 SDK；必要时隔离为原生适配器进程 | 工业相机发现、采集控制、图像/块数据与相机特征访问。 | GigE Vision/USB3 Vision/CoaXPress 等接口、带宽、触发同步、GenTL Producer、Linux/ARM 支持、SDK license 和原生依赖；Go 通常需要通过 cgo 或进程边界调用厂商原生实现。 |
-| 视觉推理/分析结果 | 版本化 HTTP/gRPC、MQTT 或 ONVIF 元数据适配器 | 接收视觉事件、检测对象、计数、分类或缺陷结果。 | 统一时间/空间坐标、置信度、模型版本、事件幂等、证据引用和设备/工位映射。 |
+- Prefer native subscriptions where supported, including KeepAlive, reconstruction, and resubscription.
+- For polling, combine requests by equipment and limit concurrency and frequency. Multiple UI views or rules can share one poll.
+- Publish equipment telemetry, native analytics, and external VisualSignal events with source, sequence and timestamps. Send media on its own path.
+- Buffer brief failures within limits. Define drop/sampling behavior and raise observable alarms on overflow. Give media separate limits and retention.
+- Use consumer groups or equivalent delivery management. Implement idempotency where exactly-once effects are required.
+- Publish status events for unknown quality, disconnection, and Gateway failover. Mark stale values accordingly.
 
-\* 本文将对话中的“贝福 PLC”暂按“倍福（Beckhoff）PLC”理解。若实际指其他厂商，连接器需要基于该厂商的具体型号和通信手册重新评估。
+Isolate bus and storage behind interfaces. Start with a single deployment and embedded queue or lightweight broker. Evaluate NATS JetStream or Kafka for multiple Gateways, consumers, buffering, and replay once scale requires it.
 
-如果目标设备的公开接口是 OPC UA 或 Modbus，优先用标准接口接入；厂商专有协议作为独立适配器实现。Modbus 本身只定义协议，不提供设备寄存器表，寄存器地址和缩放仍需具体型号文档。
-
-### 6.4 开源库准入
-
-引入协议库、相机 SDK 或 GenTL Producer 前需形成简短评估记录：许可证和传递依赖、活跃维护/安全响应、支持的协议子集、目标 Linux 架构、同步/异步行为、断线恢复、性能与内存、诊断能力、测试设备/模拟器及替换成本。不得仅依据 README 的“支持协议/相机”标签就视为生产可用。
-
-## 7. 采集、订阅与事件处理
-
-订阅配置由 Process 保存并分配给 Gateway。每个订阅明确目标、协议模式、周期/死区、队列策略、最大速率、起止时间、持久化和消费策略。
-
-- 若协议提供服务端订阅，适配器尽量使用服务端订阅，并处理 KeepAlive、重建和重订阅。
-- 若协议只支持轮询，Gateway 调度器负责合并同设备请求、控制并发和频率，避免每个 UI/规则订阅产生重复轮询。
-- 设备遥测、相机原生分析事件和外部视觉服务产生的 `VisualSignal` 写入内部事件总线，带来源、序列号和时间戳。视频帧/媒体片段不进入此总线。
-- 短暂故障允许有限缓存；超过容量时执行明确定义的丢弃/采样策略并产生可观测告警。媒体缓存使用独立容量和保留策略。
-- Process 的逻辑订阅使用消费者组或等价机制管理交付；需要严格一次效果时使用幂等处理，不宣称消息传输天然 exactly-once。
-- 对数据质量未知、设备断线或 Gateway 切换，发布状态事件，不把旧值静默当作实时 GOOD 值。
-
-内部事件总线和存储实现应通过接口隔离。首个试点可采用单体部署加内嵌队列/轻量消息代理；当需要多 Gateway、多消费者、缓冲和重放时可引入 NATS JetStream 或 Kafka。不得仅为架构图引入尚无用例的基础设施。
-
-## 8. 下行命令与执行控制
-
-统一命令流程：
+## 8. Commands and execution controls
 
 ```mermaid
 sequenceDiagram
@@ -276,181 +193,156 @@ sequenceDiagram
     participant G as Gateway
     participant A as Protocol Adapter
     participant D as Device
-    Caller->>P: 命令请求 + 幂等键
-    P->>P: 身份、权限、范围、参数、策略、审计校验
-    P->>G: 已授权命令 + 命令 ID + fencing token
+    Caller->>P: Request and idempotency key
+    P->>P: Check identity, permissions, scope, parameters, policy, audit
+    P->>G: Authorized command, command ID, fencing token
     G->>A: write / invoke
-    A->>D: 协议操作
-    D-->>A: 协议响应 / 设备结果
-    A-->>G: 结构化执行结果
-    G-->>P: 命令状态与结果
-    P-->>Caller: 接受 / 执行中 / 成功 / 失败 / 超时
+    A->>D: Protocol operation
+    D-->>A: Protocol response / device outcome
+    A-->>G: Structured result
+    G-->>P: Status and result
+    P-->>Caller: Accepted / running / succeeded / failed / timed out
 ```
 
-命令状态至少包括 `RECEIVED`、`VALIDATED`、`DISPATCHED`、`SUCCEEDED`、`FAILED`、`TIMED_OUT`、`CANCELLED` 和 `UNKNOWN`。超时不等于设备未执行；Process 应区分传输超时与设备确认，并为不确定结果提供查询或人工处置路径。
+Track RECEIVED, VALIDATED, DISPATCHED, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, and UNKNOWN at minimum. A timeout leaves open whether the device acted. Distinguish transport timeout from device acknowledgment and provide a status query or human resolution path.
 
-下行规则：
+Require explicit capabilities and parameter schemas for writes and invocations. Higher-risk operations may need extra approval, two-person confirmation, or a time window. Support caller idempotency keys, platform command IDs, deduplication retention, target/operation/parameter summaries and full result audit. Gateway checks authorization context, valid config version, target ownership, and lease fencing token. Report SUCCEEDED only for sufficient protocol confirmation. Use ACCEPTED or UNKNOWN where appropriate. Route all rule- and agent-generated writes through the Process command gateway.
 
-- 写点位与调用函数必须使用显式的能力定义和参数 schema；危险操作可配置额外审批、双人确认或操作窗口。
-- 需支持调用方幂等键、平台命令 ID、去重保留时间、目标设备/操作/参数摘要和完整结果审计。
-- Gateway 只接受授权上下文完整、配置版本有效且目标归属正确的命令；平台分配会话租约时同时校验 fencing token。
-- 只有协议确认语义足够时才报告 `SUCCEEDED`；否则返回 `ACCEPTED` 或 `UNKNOWN` 等准确状态。
-- 禁止把规则或 Agent 生成的设备写入绕过 Process 命令网关直接发往 Gateway。
+## 9. Bounded rule DSL
 
-## 9. 受限规则 DSL
+Provide declarative rules for filters, thresholds, bounded state correlations, and approved equipment operations. User-supplied general-purpose code, agent inference, and image recognition are outside the rule runtime.
 
-连接器提供受限的声明式规则，不执行用户提交的通用语言代码。规则用于订阅后的筛选、阈值判断、有限状态关联和调用受控设备能力；不承担 Agent 推理、图像识别或任意程序运行。
+1. **Event conditions.** CEL expressions evaluate typed device events, visual signals, and bounded window state. CEL is non-Turing-complete and supports predictable cost. Go and Java implementations allow a portable rule format.
+2. **Action graph.** A versioned JSON Schema describes finite, acyclic sequences and branches. Select registered actions such as read point, emit event, request write, or invoke function. Each declares input schema, risk, and permissions. Exclude loops, recursion, imports, file/network I/O, reflection, and unrestricted calls.
 
-规则由两部分组成：
+A typed equipment or visual event enters a worker for type checking and CEL evaluation. Finite action intents go to the Process command gateway for policy review, then Gateway performs the protocol operation.
 
-1. **事件条件**：使用 CEL 表达式检查类型化的设备事件、视觉信号和受限的窗口状态。CEL 是非图灵完备表达式语言，适合有界、可预测的条件计算；Go 与 Java 都有官方 CEL 实现，因而规则格式不绑定宿主服务语言。
-2. **动作图**：用有版本的 JSON Schema 描述有限、无环的顺序动作和条件分支。动作只能从注册表中选择，例如读取点位、发出业务事件、请求写点位、调用设备函数；每种动作具有输入 schema、风险级别和权限要求。DSL 不提供循环、递归、导入、文件/网络 I/O、反射或任意函数调用。
+- Record rule ID, version, author, release state, I/O schemas, equipment/capability scope, and compatible event versions.
+- Offer a visual editor and schema-validated JSON/YAML view or export. Apply the same allowlist to expressions and actions.
+- Before release, parse and type-check CEL, validate allowed variables/functions, action schema and cost. Bound expression length and collection size. Replay sample or redacted historical events.
+- Bound execution cost, expression length, graph nodes, event rate, concurrency, queue, action timeout, and window size. Provide bounded window/count/deduplication primitives for correlations.
+- Separate worker and Gateway processes/containers. Workers lack OT access and emit intents only. Process rechecks authorization, interlocks, bounds, and audit.
+- Support approval, canary scope, immediate disablement, and rollback. Link each execution to rule version, event ID, output, duration, errors, and command ID. Redact sensitive fields.
+- Expose structured visual metadata and protected evidence references to rules. Keep raw frames and long-lived stream addresses outside the context.
 
-建议链路：
+CEL evaluates expressions. The connector's versioned schema defines sequencing, branching, windows, retries, and deduplication. Expose minimal evaluator functions and review host extensions for cost and permissions.
 
-```text
-设备/视觉事件 -> 规则 Worker 进行类型校验和 CEL 条件计算
-             -> 生成有限动作意图 -> Process Command Gateway 复核权限/策略
-             -> Gateway 执行对应协议操作
-```
+## 10. API and integration boundaries
 
-规则治理要求：
+Define specific paths and message schemas in module designs. Provide:
 
-- 每条规则有 ID、版本、作者、发布状态、输入/输出 schema、可用设备/能力范围和兼容事件版本。
-- UI 提供可视化规则编辑器；高级用户可查看或导出受 schema 校验的 JSON/YAML。表达式和动作内容始终受同一白名单约束。
-- 发布前进行 CEL 解析、类型检查、允许变量/函数检查、动作 schema 检查和复杂度/成本上限校验；限制表达式长度和集合输入规模，使用样例事件或脱敏历史事件回放。
-- 每次执行限制规则成本、表达式长度、动作图节点数、事件速率、并发、排队长度、单动作超时和状态窗口大小。跨事件关联使用平台提供的有界窗口/计数/去重原语，不开放用户编写无限循环。
-- Worker 与 Gateway 分进程/容器运行，不连接设备网段；其输出仅为命令意图，Process Command Gateway 重新执行权限、联锁、参数范围和审计检查。
-- 发布支持审批、灰度范围、立即停用和回滚。每次执行关联规则版本、输入事件 ID、输出、耗时、错误和命令 ID；敏感字段按策略脱敏。
-- 视觉事件只向规则提供结构化元数据和受控证据引用，不传入原始帧或长期有效流地址。
+- CRUD and query operations for equipment, points, functions, Gateways, and connection configurations.
+- Gateway registration, heartbeat, health, configuration fetch/acknowledgment, and version reporting.
+- Subscription creation/cancellation, point reads, event queries and realtime subscriptions.
+- Writes, function calls, command status, and audit queries.
+- Camera discovery/status, authorized stream sessions and evidence access, visual event ingestion and queries.
+- Rule versioning, type checks, dry runs, publication, disablement, and rollback.
+- WebSocket or equivalent streaming updates for UI. Provide stable APIs and event contracts to agents and other systems.
 
-CEL 本身只负责表达式计算，并不定义工作流。因此动作序列、条件分支、状态窗口、重试和去重语义由连接器自己的版本化规则 schema 定义；规则 evaluator 只暴露最小函数集，宿主扩展函数也要按调用成本和权限审核。
+Use HTTP for UI management, gRPC or equivalent persistent bidirectional connections for Gateway control, and a broker for high-throughput/multi-consumer events. Early deployments can simplify transport. Keep domain contracts versioned and replaceable. Add optional fields compatibly, never reuse a field number or name with a different meaning, and maintain migration and consumer compatibility policies.
 
-## 10. API 与集成边界
+## 11. Technology options
 
-连接器至少提供以下逻辑 API 能力，具体路径和消息定义留到工程内部 API 设计：
-
-- 设备、点位、函数、Gateway 和连接配置的 CRUD/查询。
-- Gateway 注册、心跳、健康、配置拉取/确认和版本报告。
-- 采集订阅创建/取消、单点读取、实时事件查询/订阅。
-- 点位写入、函数调用、命令状态查询和审计查询。
-- 摄像头/视频源发现与状态、受授权的流会话/证据访问、视觉事件接收与查询。
-- 规则版本管理、类型校验/试运行、发布/停用/回滚。
-- WebSocket 或等价流式接口向 UI 推送状态更新；Agent/其他系统优先使用稳定的 API/事件契约。
-
-HTTP API 适合 UI 管理操作；Gateway 控制通道采用 gRPC 或等价的双向长连接接口；高吞吐/多消费者数据事件使用消息代理。早期可简化部署，但这些领域契约应保持版本化和传输可替换。
-
-事件和命令 schema 采用显式版本。字段兼容规则为向后兼容新增可选字段、禁止复用字段编号/名称表达不同含义，并维护 schema 迁移和消费者兼容策略。
-
-## 11. 技术栈建议
-
-| 部分 | 建议基线 | 选择理由 / 约束 |
+| Component | Baseline | Rationale or constraint |
 | --- | --- | --- |
-| Gateway、Process | Go，版本按发布时受支持的稳定版固定；HTTP/gRPC 服务模块 | 适合长连接、网络 I/O 和边缘容器部署；Go 不因选作服务语言而自动解决协议互操作，适配器仍需逐型号验收。 |
-| 协议适配 | Go 接口/包按协议分层；使用原生 SDK/cgo 的适配器独立进程隔离 | 避免单个厂商 SDK 或原生依赖影响核心 Gateway。 |
-| 规则逻辑 | JSON Schema 动作图 + CEL 条件表达式；Go 使用 `cel.dev/cel-go` evaluator | 逻辑能力受限、可静态校验；规则契约不依赖 Go，可用 CEL-Java 等实现保持跨语言语义。 |
-| 前端 | TypeScript + React 或 Vue；REST 管理 API，WebSocket 实时更新 | 选择团队熟悉的一种，不把协议逻辑放到浏览器。 |
-| Agent/模型 | 独立 Python 服务；调用连接器 API 或订阅事件 | 便于使用 AI/数据科学生态；保持与 OT 连接和写入权限隔离。 |
-| 视频/视觉 | 独立视频处理或视觉推理服务；实现与部署待试点确定 | 原始媒体走独立媒体面，结构化结果按 `VisualSignal` 事件契约回到连接器。 |
-| 配置/元数据 | PostgreSQL | 保存设备模型、连接配置引用、订阅、规则版本和审计元数据。机密需交给 Secret 管理系统。 |
-| 事件传输 | 先根据规模选轻量内嵌队列或 NATS JetStream；需要长期大规模重放时再评估 Kafka | 避免过早强制采用复杂中间件；事件契约独立于选型。 |
-| 可观测性 | OpenTelemetry，Prometheus 兼容指标，结构化日志 | 连接、采集、规则和命令可通过统一 trace/correlation ID 追踪。 |
-| 交付 | OCI 容器镜像，Kubernetes manifests/Helm（后续） | 支持边缘与中心部署；协议所需网络和设备访问权限显式声明。 |
+| Gateway and Process | Go, pin a supported stable version at release, modular HTTP/gRPC services | Long-lived network I/O and edge containers. Verify protocol compatibility per model. |
+| Protocol adapters | Go interfaces/packages by protocol, separate processes for native SDKs/cgo | Isolate vendor dependencies and failures from core Gateway. |
+| Rules | JSON Schema action graph and CEL conditions, cel.dev/cel-go evaluator in Go | Bounded, statically checkable, portable to implementations such as CEL-Java. |
+| Frontend | TypeScript and React or Vue, REST management, WebSocket updates | Choose according to team expertise. Keep protocol logic on the backend. |
+| Agent/model | Separate Python service using connector APIs or subscriptions | Access the AI/data ecosystem while isolating OT sessions and write permissions. |
+| Video/vision | Separate processing or inference service, selected during pilot | Separate media plane and versioned VisualSignal events. |
+| Configuration/metadata | PostgreSQL | Equipment models, connection references, subscriptions, rule versions, and audit metadata. Store secrets in a secret manager. |
+| Event transport | Lightweight embedded queue or NATS JetStream; consider Kafka for large long-term replay | Select by measured scale, with independent event contracts. |
+| Observability | OpenTelemetry, Prometheus-compatible metrics, structured logs | Shared trace/correlation IDs for sessions, acquisition, rules and commands. |
+| Delivery | OCI images, later Kubernetes manifests or Helm | Edge and central deployment with explicit device and network permissions. |
 
-当前建议以 Go 作为连接器服务主栈；协议库成熟度按目标设备核验。若首个半导体设备在 Go 下缺少可接受的 SECS/GEM 实现，可以把该适配器作为独立服务实现，而不必因此改变 Gateway、Process 和统一事件/命令契约。Agent/模型仍可由独立 Python 服务承载。
+Go is the proposed connector service language. Check library maturity on target equipment. If Go lacks a suitable SECS/GEM implementation for the first semiconductor tool, use a separate adapter service while retaining Gateway, Process, and shared contracts. Agents and model services can still use Python.
 
-## 12. 安全、权限与审计
+## 12. Security, permissions, and audit
 
-- 网络分区：OT、Gateway、Process、前端/外部 API 按现场安全策略分区；优先由现场 Gateway 发起出站连接。
-- 机密：设备凭证、证书私钥和 ADS 路由密钥存 Secret 管理系统；数据库只保留引用，不在普通日志或规则上下文出现。
-- 摄像头 RTSP/ONVIF 凭据、临时流令牌和视觉证据链接按机密处理；预览、回放、导出和证据保留需独立授权与审计。
-- 认证和授权：Gateway 身份使用证书/工作负载身份；用户和 Agent 命令带可追溯身份、角色和策略上下文。
-- 最小权限：每条规则和调用方只可访问明确设备、点位、函数和命令类型；默认只读。
-- 安全写入：参数范围、写入速率、目标白名单、设备状态条件、审批和操作窗口按风险策略配置。不得把软件联锁宣称为安全认证功能。
-- 审计：记录谁在何时对哪个设备/点位执行何种操作，规则/模型/策略版本、命令参数摘要、校验结果、协议响应和最终状态。
-- 协议安全：优先配置 OPC UA 安全策略、证书信任和轮换；不为方便默认接受所有证书。未加密协议通过网络隔离、专用 VLAN/VPN 等现场措施限制暴露。
-- 日志：可配置是否记录原始报文；默认脱敏，限制保留期和访问权限，避免 SECS/GEM 或设备载荷包含敏感生产数据时泄露。
+- Segment OT, Gateway, Process, frontend, and external API networks according to site policy. Prefer outbound sessions from field Gateways.
+- Store equipment credentials, private keys, and ADS routing keys in secret management. Keep protected references in the database and secrets out of ordinary logs and rule contexts.
+- Treat RTSP/ONVIF credentials, temporary tokens, and visual evidence links as secrets. Authorize and audit preview, playback, export, and retention separately.
+- Identify Gateways by certificate or workload identity. Attribute user and agent commands to identity, role, and policy context.
+- Scope every caller and rule to explicit devices, points, functions, and command types. Default to read-only.
+- Apply parameter bounds, write rates, target allowlists, device conditions, approvals, and operating windows according to risk. Software interlocks carry no implicit safety certification.
+- Audit actor, time, equipment/point, operation, rule/model/policy version, parameter summary, validation, protocol response, and terminal status.
+- Configure OPC UA security policy, trust, and rotation. Require trusted certificates. Restrict unencrypted protocols through field network isolation, dedicated VLANs, or VPNs.
+- Make raw message logging configurable. Redact by default and restrict access and retention for sensitive SECS/GEM and device payloads.
 
-## 13. 可用性、扩缩容与运维
+## 13. Availability, scaling, and operations
 
-- Gateway 按站点/设备组/协议能力分片；每个设备会话有明确 owner，重平衡过程考虑断线和命令状态。
-- Process API 可无状态扩展；配置和事件消费使用数据库/消息代理中的共享状态协调。
-- 断线恢复采用指数退避和抖动，区分设备离线、认证失败、协议不兼容和网络不可达。
-- 采集调度有设备级、连接级和 Gateway 级并发/频率上限；拥塞时按配置降采样、暂停低优先级订阅或触发告警。
-- Gateway 配置变更支持版本、差异、确认、失败回滚和分批发布；连接参数变更可能导致会话重建，必须展示影响。
-- 升级支持 Gateway 分批更新、Process 滚动更新和规则版本回滚；避免 Gateway 与 Process 的契约版本不兼容。
-- 关键指标：在线设备数、连接重试次数、订阅活跃数、采样延迟、事件队列积压、丢弃数、命令成功/失败/超时率、规则耗时/失败数、配置应用延迟。
-- 摄像头与媒体指标另行观测：在线流数、码率/帧率、断流与重连、媒体延迟、帧缺口、代理队列、视觉事件延迟和证据存储失败；不得用普通点位队列指标替代。
-- 健康检查分层：服务存活、控制面连接、事件总线可用性、单个 Gateway 状态和单台设备连接状态分别呈现。
+Shard Gateways by site, equipment group, or protocol capability. Give each session an owner and account for connection and command state during rebalancing. Scale Process APIs statelessly and coordinate configuration and consumers through shared database/broker state. Reconnect with exponential backoff and jitter. Distinguish offline devices, authentication failure, incompatibility, and unreachable networks.
 
-## 14. 测试与验收策略
+Limit acquisition rate and concurrency per device, connection, and Gateway. Under congestion, downsample, pause low-priority subscriptions, or alarm according to configuration. Version config changes with diffs, acknowledgment, staged rollout, and rollback. Show the impact of changes that rebuild sessions. Stage Gateway upgrades, roll Process instances, support rule rollback, and preserve contract compatibility.
 
-协议适配须在真实设备或经验证的协议模拟器上验证。验收覆盖：
+Track online devices, retries, active subscriptions, sample delay, backlog, drops, command success/failure/timeouts, rule duration/failures, and config application delay. Separately track active streams, bit/frame rate, disconnects, reconnects, media delay, frame gaps, proxy queues, visual-event latency, and evidence-storage failures. Report service liveness, control-plane connectivity, bus availability, Gateway health, and individual equipment connectivity independently.
 
-- 正常连接、断线、重连、设备重启、服务重启和配置热更新。
-- 数据类型、端序、缩放、时间戳、质量码、空值和异常响应映射。
-- 订阅频率、死区、队列溢出、恢复订阅、重复/乱序消息处理。
-- 点位写入和函数调用参数校验、权限拒绝、超时、取消、重复请求和未知结果处理。
-- 协议安全配置、证书/凭证轮换和失效场景。
-- Kubernetes 节点重调度、Gateway 唯一所有者、优雅终止、边缘网络分区和恢复。
-- CEL 解析/类型检查、成本上限、动作白名单、规则回放、命令策略拒绝和审计关联。
-- 对 SECS/GEM，使用真实目标设备验证状态机、设备常见 S/F 消息、厂商扩展及超时；模拟器通过不代表设备互操作验收。
-- 对摄像头，验证 ONVIF/RTSP 认证、编解码、时间同步、断流恢复、并发拉流和权限隔离；对机器视觉相机验证触发同步、带宽、丢帧、GenTL/厂商依赖及长时间采集稳定性。
-- 对视觉信号，验证源 camera/工位关联、时间/区域坐标、置信度、重复消息、模型版本、证据引用访问控制及与 PLC/机器人事件的时间关联。
+## 14. Testing and acceptance
 
-上线前每种协议需有兼容清单，至少记录设备型号/固件、适配器版本、已覆盖功能、限制、现场网络要求和已验证的安全模式。
+Test on real equipment or a validated protocol simulator. Cover:
 
-## 15. 分阶段落地
+- Normal connection, disconnection, reconnect, device/service restart, and hot configuration updates.
+- Types, byte order, scaling, timestamps, quality codes, nulls, and exception mapping.
+- Subscription frequency, deadband, overflow, resubscription, duplicates, and out-of-order delivery.
+- Write/function parameter validation, denial, timeout, cancellation, duplicated requests, and unknown outcomes.
+- Security modes, credential and certificate rotation and expiration.
+- Kubernetes rescheduling, unique Gateway ownership, graceful exit, edge partition and recovery.
+- CEL parsing/type checks, cost caps, action allowlists, rule replay, command-policy denial, and audit correlation.
+- SECS/GEM state machines, common S/F messages, vendor extensions, and timeouts on actual target tools. Simulator acceptance alone cannot establish equipment interoperability.
+- ONVIF/RTSP authentication, codecs, time sync, stream recovery, concurrent pulls, and access isolation. For machine vision, test trigger sync, bandwidth, drops, GenTL/vendor dependencies, and extended acquisition stability.
+- Visual signal association to source and station, time/region coordinates, confidence, duplicate handling, model version, evidence access control, and temporal correlation to PLC/robot events.
 
-### 阶段 0：现场和协议确认
+Before commissioning, maintain a protocol compatibility list with device model/firmware, adapter version, tested capabilities, limitations, field network requirements, and validated security modes.
 
-选择一个试点站点、设备型号、协议及只读/可写边界。获取协议手册、设备模拟器或测试设备，确认 Linux 网络拓扑、授权和下行风险；用真实设备或可互操作模拟器验证 Go 协议库，优先排除 SECS/GEM 的生产设备兼容性风险。
+## 15. Rollout
 
-### 阶段 1：最小可运行连接器
+### Phase 0. Confirm field equipment and protocol
 
-实现 Go 服务骨架、设备/连接/点位模型、Gateway 注册与心跳、一个协议适配器、只读采集、状态/质量事件和基础监控。首个协议按试点设备选型，不同时铺开全部协议。
+Choose a pilot site, model, protocol, and read/write scope. Obtain manuals, simulator or test equipment. Confirm Linux network topology, licensing, and downlink risk. Verify the Go library on hardware or an interoperable simulator and address SECS/GEM production compatibility early.
 
-### 阶段 2：订阅和受控下行
+### Phase 1. Minimum working connector
 
-加入协议订阅或轮询调度、命令生命周期、后端权限/策略/审计、幂等与超时语义，并通过模拟器和实际设备验证读写行为。
+Implement Go services, device/connection/point models, registration and heartbeat, one pilot-selected adapter, read-only collection, state and quality events, and basic monitoring.
 
-### 阶段 3：前端运维和规则 Worker
+### Phase 2. Subscriptions and controlled downlink
 
-提供设备树、点位浏览、订阅配置、规则编辑/试运行和审计界面；CEL 条件与动作图在规则 Worker 中运行，输出命令意图经过统一网关验证。
+Add subscriptions or polling, command lifecycle, backend policy, authorization, audit, idempotency, and timeout semantics. Verify reads and writes on a simulator and actual equipment.
 
-### 阶段 4：多 Gateway 与 Kubernetes
+### Phase 3. Frontend and rule worker
 
-实现 Gateway owner/租约、配置分发、滚动升级、边缘/中心拓扑、事件缓冲和故障恢复。依据实测负载决定引入消息代理及数据存储系统。
+Provide device tree, point browser, subscriptions, rule editing and dry runs, and audit UI. Run CEL and action graphs in workers. Validate emitted intents through the common command gateway.
 
-### 阶段 5：扩展协议与 Agent 接口
+### Phase 4. Multiple Gateways and Kubernetes
 
-逐个接入 OPC UA、SECS/GEM、Modbus、倍福 ADS 和摄像头/机器视觉源等经试点确认的适配器；打通独立视频媒体面与结构化视觉信号契约，稳定事件和命令 API，供 Agent/世界模型通过授权接口使用。
+Implement ownership/leases, configuration distribution, rolling upgrades, edge/central topology, buffering, and recovery. Select brokering and storage from measured load.
 
-## 16. 待确认的决策
+### Phase 5. Additional protocols and agent interfaces
 
-1. 首个试点设备、型号、固件和协议；优先只读还是同时验证写入/方法调用。
-2. “贝福 PLC”是否指“倍福（Beckhoff）TwinCAT PLC”。本文暂按此理解。
-3. 现场部署是边缘 Kubernetes、普通 Linux 主机，还是二者并存；是否存在串口和多网卡需求。
-4. 初期消息传输、遥测历史保留和事件重放的规模要求。
-5. 规则是否需要多租户隔离，以及每条规则允许访问的事件、设备和动作能力范围。
-6. 下行风险分级、审批规则、自动联锁数据源和人工接管流程。
-7. SEMI 规范授权和目标设备 GEM/GEM300 功能范围。
-8. 摄像头范围是普通安防/IP 摄像头、工业机器视觉相机，还是两者都要；首批厂商/型号、ONVIF Profile 或 GenICam/GenTL 能力。
-9. 视觉处理由已有 VMS/边缘 AI、独立视觉服务还是相机内置分析提供；推理位置、时延目标、视频留存/回放、证据访问和隐私策略。
-10. 目标 SECS/GEM 设备对 Go 候选库的互操作结果；若缺口不可接受，是否以独立适配器服务封装其他语言库。
+Add confirmed OPC UA, SECS/GEM, Modbus, Beckhoff ADS, camera, and machine vision adapters incrementally. Establish the media plane and structured visual contracts. Stabilize event and command APIs for authorized agent and world-model access.
 
-## 17. 参考资料与候选实现
+## 16. Open decisions
 
-以下链接用于初步技术可行性判断，版本和状态在具体实施时需重新核验：
+1. Which pilot device, model, firmware, and protocol? Validate reads first or also writes/method calls?
+2. Does the PLC vendor named in discussions refer to Beckhoff TwinCAT?
+3. Edge Kubernetes, regular Linux, or both? Are serial devices or multiple network interfaces required?
+4. What scale of messaging, telemetry retention, and replay is needed initially?
+5. Do rules require tenant isolation? Which events, equipment, and actions can each access?
+6. How should downlink risk, approvals, automatic interlock data, and manual takeover work?
+7. What SEMI licensing and GEM/GEM300 functions apply?
+8. Which IP/security or industrial machine vision cameras, vendors, models, ONVIF profiles, and GenICam/GenTL capabilities are in scope?
+9. Which analytics run in VMS/edge AI, a standalone vision service, or on-camera? Determine inference location, latency, retention, replay, evidence access, and privacy.
+10. How do Go SECS/GEM candidates perform with the target tool? Should an isolated adapter host another language if gaps remain?
 
-- [gopcua/opcua](https://github.com/gopcua/opcua)：Go OPC UA 库；覆盖和安全模式按目标设备复核。
-- [go-secs](https://github.com/arloliu/go-secs)：Go SECS-I/SECS-II/HSMS/SML 库；[go-factory-io](https://github.com/seikaikyo/go-factory-io) 是更高层 GEM 候选，但当前项目说明仅验证过模拟器。
-- [goburrow/modbus](https://github.com/goburrow/modbus)：Go Modbus TCP、RTU、ASCII 候选库。
-- [Beckhoff ADS Linux 库](https://github.com/Beckhoff/ADS)：C++ 原生库；Go 接入需要评估 cgo 或独立进程封装。
-- [Go ONVIF 客户端](https://github.com/use-go/onvif) 与 [gortsplib](https://github.com/bluenviron/gortsplib)：分别评估摄像头管理/事件与 RTSP 媒体接入。
-- [Beckhoff ADS/AMS 规范](https://infosys.beckhoff.com/content/1033/tcadscommon/12440276875.html)
-- [CEL Go 实现](https://github.com/cel-expr/cel-go) 和 [CEL Java 实现](https://github.com/cel-expr/cel-java)：同一受限表达式语言可用于不同宿主语言。
-- [CEL in Kubernetes](https://kubernetes.io/docs/reference/using-api/cel/)：CEL 非图灵完备及确定性成本/资源约束介绍。
-- [ONVIF Profile T](https://www.onvif.org/profiles/profile-t/)；高级视频流、编码、事件和元数据能力，具体设备功能依符合性和可选特性而异。
-- [ONVIF Profile M](https://www.onvif.org/profiles/profile-m/)；用于分析元数据与事件的标准方向。
-- [EMVA GenICam](https://www.emva.org/standards-technology/genicam/)；工业相机跨接口的通用编程接口方向；[GenICam 下载与版本](https://www.emva.org/standards-technology/genicam/genicam-downloads/)需在引入时核验。
+## 17. References and candidate implementations
+
+Recheck versions, status, and target-device support during implementation.
+
+- [gopcua/opcua](https://github.com/gopcua/opcua) is a Go OPC UA candidate. Verify services and security modes.
+- [go-secs](https://github.com/arloliu/go-secs) covers SECS-I, SECS-II, HSMS, and SML. [go-factory-io](https://github.com/seikaikyo/go-factory-io) is a higher-level GEM candidate with reported simulator testing.
+- [goburrow/modbus](https://github.com/goburrow/modbus) is a Go candidate for TCP, RTU, and ASCII.
+- [Beckhoff ADS](https://github.com/Beckhoff/ADS) provides a native C++ library. Evaluate cgo or process isolation. [ADS/AMS specification](https://infosys.beckhoff.com/content/1033/tcadscommon/12440276875.html)
+- [Go ONVIF client](https://github.com/use-go/onvif) and [gortsplib](https://github.com/bluenviron/gortsplib) cover camera management/events and RTSP respectively.
+- [CEL Go](https://github.com/cel-expr/cel-go) and [CEL Java](https://github.com/cel-expr/cel-java) implement the same bounded expression language. [CEL in Kubernetes](https://kubernetes.io/docs/reference/using-api/cel/) describes deterministic costs and resource constraints.
+- [ONVIF Profile T](https://www.onvif.org/profiles/profile-t/) covers advanced streaming, codecs, metadata, and events subject to conformance and optional device capabilities. [Profile M](https://www.onvif.org/profiles/profile-m/) covers analytics metadata and events.
+- [EMVA GenICam](https://www.emva.org/standards-technology/genicam/) defines a common industrial camera API across interfaces. Check [GenICam downloads and versions](https://www.emva.org/standards-technology/genicam/genicam-downloads/) at integration time.
