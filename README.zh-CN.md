@@ -10,3 +10,34 @@
 - 后续模块设计放在 `docs/modules/`，例如 Gateway、协议适配、设备模型、规则运行时和前端。
 
 整体系统架构和跨工程职责边界由 `design-docs` 工程维护；本工程维护连接器自身的技术方案、模块接口和实现设计。
+
+## 当前工程骨架
+
+本仓库已初始化 Go 模块和三类运行入口：
+
+- `cmd/gateway`：设备协议会话和适配器运行时入口。
+- `cmd/process`：设备模型管理 API 与业务处理入口。
+- `cmd/rule-worker`：与设备网络隔离的规则执行进程边界（当前为空闲骨架）。
+- `frontend`：Vue 3 + TypeScript + Vite 运维界面骨架。
+- `internal/equipment`、`internal/protocol`、`internal/contracts/v1`：统一能力模型、适配器 SPI 和事件/命令契约。
+- `deployments/kubernetes/base`：Linux 容器及 Kubernetes 初始部署模板。
+
+当前 Process 使用内存设备仓储，仅提供健康检查和空设备列表；Gateway 尚未注册协议实现，规则 Worker 尚未加载 CEL。该骨架不宣称已具备真实设备采集或下行能力。视觉/摄像头不在本阶段实现。
+
+### 本地运行
+
+```sh
+make run-process
+# 新终端中：
+make run-gateway
+```
+
+Process 默认监听 `:8080`，Gateway 默认监听 `:8081`。前端开发环境：
+
+```sh
+cd frontend
+npm install
+npm run dev
+```
+
+生产部署模板见 `deployments/kubernetes/README.md`。模块边界见 `docs/modules/README.md`。

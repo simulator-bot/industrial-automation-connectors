@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connectors-process
+  labels:
+    app.kubernetes.io/name: connectors-process
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: connectors-process
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: connectors-process
+    spec:
+      containers:
+        - name: process
+          image: industrial-automation-connectors:process-dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PROCESS_SERVICE_NAME
+              value: process
+            - name: PROCESS_HTTP_ADDR
+              value: :8080
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connectors-process
+spec:
+  selector:
+    app.kubernetes.io/name: connectors-process
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
