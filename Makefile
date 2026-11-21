@@ -14,10 +14,12 @@ build:
 	done
 
 run-process:
-	$(GO) run ./cmd/process
+	PROCESS_HTTP_ADDR="$${PROCESS_HTTP_ADDR:-127.0.0.1:8080}" \
+	PROCESS_CATALOG_PATH="$${PROCESS_CATALOG_PATH:-var/equipment-catalog.json}" \
+	PROCESS_GATEWAY_URL="$${PROCESS_GATEWAY_URL:-http://127.0.0.1:8081}" $(GO) run ./cmd/process
 
 run-gateway:
-	$(GO) run ./cmd/gateway
+	GATEWAY_HTTP_ADDR="$${GATEWAY_HTTP_ADDR:-127.0.0.1:8081}" $(GO) run ./cmd/gateway
 
 run-rule-worker:
 	$(GO) run ./cmd/rule-worker

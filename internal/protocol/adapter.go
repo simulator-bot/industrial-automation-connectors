@@ -24,7 +24,9 @@ type ConnectionConfig struct {
 type Session interface {
 	Health(context.Context) error
 	Read(context.Context, []string) ([]Value, error)
-	Subscribe(context.Context, Subscription, chan<- Value) error
+	// Subscribe creates a stream that closes on context cancellation, a
+	// terminal update error, or session closure.
+	Subscribe(context.Context, Subscription) (<-chan Update, error)
 	Write(context.Context, string, json.RawMessage) error
 	Invoke(context.Context, string, json.RawMessage) (json.RawMessage, error)
 	Close() error
@@ -34,8 +36,15 @@ type Value struct {
 	TargetID        string
 	Value           json.RawMessage
 	Quality         string
+	ProtocolStatus  string
 	SourceTimestamp *time.Time
+	ReceivedAt      time.Time
 	Sequence        uint64
+}
+
+type Update struct {
+	Value Value
+	Err   error
 }
 
 type Subscription struct {

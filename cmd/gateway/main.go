@@ -11,7 +11,12 @@ import (
 func main() {
 	cfg := config.Load("GATEWAY", ":8081")
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := gateway.NewServer(cfg, logger).Run(); err != nil {
+	server, err := gateway.NewServer(cfg, logger, os.Getenv("GATEWAY_OPCUA_CONFIG"))
+	if err != nil {
+		logger.Error("gateway startup failed", "error", err)
+		os.Exit(1)
+	}
+	if err := server.Run(); err != nil {
 		logger.Error("gateway server stopped", "error", err)
 		os.Exit(1)
 	}
