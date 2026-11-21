@@ -11,7 +11,7 @@
 
 整体系统架构和跨工程职责边界由 `design-docs` 工程维护；本工程维护连接器自身的技术方案、模块接口和实现设计。
 
-## 当前工程骨架
+## 当前实现
 
 本仓库已初始化 Go 模块和三类运行入口：
 
@@ -22,7 +22,7 @@
 - `internal/equipment`、`internal/protocol`、`internal/contracts/v1`：统一能力模型、适配器 SPI 和事件/命令契约。
 - `deployments/kubernetes/base`：Linux 容器及 Kubernetes 初始部署模板。
 
-当前 Process 使用内存设备仓储，仅提供健康检查和空设备列表；Gateway 尚未注册协议实现，规则 Worker 尚未加载 CEL。该骨架不宣称已具备真实设备采集或下行能力。视觉/摄像头不在本阶段实现。
+Gateway 已支持连接本地 OPC UA 模拟器、推送原生监视项通知和调用已配置的方法。Process 仍使用内存设备仓储，仅提供健康检查和空设备列表。规则 Worker 尚未加载 CEL。
 
 ### 本地运行
 
@@ -41,3 +41,24 @@ npm run dev
 ```
 
 生产部署模板见 `deployments/kubernetes/README.md`。模块边界见 `docs/modules/README.md`。
+
+### 本地 OPC UA 模拟器
+
+[示例配置](deployments/examples/opcua-simulator.json) 对应监听 4840 端口的长晶棒检测模拟器。接入其他模拟器时，按实际节点修改端点、点位 NodeID 和方法别名。Gateway 和模拟器通过回环地址连接，共用一个匿名 OPC UA 会话，安全策略为 `None`。端点里的 `localhost` 按 IPv4 连接。仅监听 IPv6 时请填 `[::1]`。
+
+```sh
+GATEWAY_HTTP_ADDR=127.0.0.1:8081 \
+GATEWAY_OPCUA_CONFIG=deployments/examples/opcua-simulator.json make run-gateway
+
+# 另开终端，接收初始值以及后续值或质量变化。
+curl -N http://127.0.0.1:8081/api/v1/gateway/opcua/events
+
+# 调用模拟器的 SetString 写入测试文本。
+curl -fsS http://127.0.0.1:8081/api/v1/gateway/opcua/methods/set-string \
+  -H 'Content-Type: application/json' \
+  -d '{"arguments":[{"type":"UInt32","value":1},{"type":"UInt32","value":0},{"type":"String","value":"CONNECTORS-OPCUA-TEST"}]}'
+```
+
+每个 SSE 客户端打开一个 OPC UA 数据变更订阅，断开后释放。点位事件包含质量、原始 UA 状态码、接收时间，以及服务端提供的源时间。`intervalMillis` 指定请求的发布周期。可选的 `deadband` 为所有配置点位设置绝对死区，适用于服务端支持该过滤器的数值点位。收到终止性的 `subscription-error` 后可重新打开事件流。如果 OPC UA 会话已断开，需要先重启 Gateway。试点暂未提供事件补发。
+
+方法参数按顺序传入，并显式声明 `UInt32`、`String` 等 UA 标量类型。无入参时使用 `{"arguments":[]}`。响应包含 Call 状态码和带类型的出参，业务结果依据出参中的 `Succeeded` 等字段判断。Gateway 对 Call 只发送一次。Process 编排、权限校验和命令记录留待后续接入。

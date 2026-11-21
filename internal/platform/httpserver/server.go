@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -22,6 +23,9 @@ func New(name, address string, handler http.Handler, logger *slog.Logger) *Serve
 }
 
 func (s *Server) Run() error {
+	requests, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	s.server.BaseContext = func(net.Listener) context.Context { return requests }
 	errCh := make(chan error, 1)
 	go func() {
 		s.logger.Info("http server listening", "service", s.name, "address", s.server.Addr)
@@ -35,6 +39,7 @@ func (s *Server) Run() error {
 		}
 		return err
 	case <-shutdownSignal():
+		cancelRequests()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := s.server.Shutdown(ctx); err != nil {

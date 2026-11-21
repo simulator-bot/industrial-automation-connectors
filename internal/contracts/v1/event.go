@@ -15,6 +15,7 @@ type PointEvent struct {
 	Value           json.RawMessage `json:"value"`
 	DataType        string          `json:"dataType"`
 	Quality         string          `json:"quality"`
+	ProtocolStatus  string          `json:"protocolStatus,omitempty"`
 	SourceTimestamp *time.Time      `json:"sourceTimestamp,omitempty"`
 	IngestTimestamp time.Time       `json:"ingestTimestamp"`
 	Sequence        uint64          `json:"sequence,omitempty"`

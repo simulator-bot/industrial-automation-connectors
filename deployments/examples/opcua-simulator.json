@@ -1,0 +1,13 @@
+{
+  "endpoint": "opc.tcp://localhost:4840",
+  "connectionId": "opcua-local",
+  "deviceId": "long-ingot-inspection-simulator",
+  "intervalMillis": 250,
+  "points": [
+    {"id": "server-time", "nodeId": "i=2258", "dataType": "time"},
+    {"id": "ingot-number", "nodeId": "ns=2;s=ingotNum", "dataType": "string"}
+  ],
+  "methods": {
+    "set-string": {"objectNodeId": "ns=2;i=15007", "methodNodeId": "ns=2;i=17019"}
+  }
+}
