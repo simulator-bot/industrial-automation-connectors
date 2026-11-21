@@ -18,11 +18,11 @@
 - `cmd/gateway`：设备协议会话和适配器运行时入口。
 - `cmd/process`：设备模型管理 API 与业务处理入口。
 - `cmd/rule-worker`：与设备网络隔离的规则执行进程边界（当前为空闲骨架）。
-- `frontend`：Vue 3 + TypeScript + Vite 运维界面骨架。
+- `frontend`：Vue 3 + TypeScript + Vite 设备配置工作台。
 - `internal/equipment`、`internal/protocol`、`internal/contracts/v1`：统一能力模型、适配器 SPI 和事件/命令契约。
 - `deployments/kubernetes/base`：Linux 容器及 Kubernetes 初始部署模板。
 
-Gateway 已支持连接本地 OPC UA 模拟器、推送原生监视项通知和调用已配置的方法。Process 仍使用内存设备仓储，仅提供健康检查和空设备列表。规则 Worker 尚未加载 CEL。
+Gateway 已支持连接本地 OPC UA 模拟器、推送原生监视项通知和调用已配置的方法。Process 保存设备模型、点位、采集计划和实例，并按实例的已保存配置执行联测。规则 Worker 尚未加载 CEL。
 
 ### 本地运行
 
@@ -32,13 +32,21 @@ make run-process
 make run-gateway
 ```
 
-Process 默认监听 `:8080`，Gateway 默认监听 `:8081`。前端开发环境：
+以上命令分别监听 `127.0.0.1:8080` 和 `127.0.0.1:8081`。再启动前端：
 
 ```sh
 cd frontend
 npm install
 npm run dev
 ```
+
+打开 `http://127.0.0.1:5173`，依次完成**设备建模 → 点位配置 → 采集计划 → 设备实例**。本地配置默认保存到 `var/equipment-catalog.json`，可用 `PROCESS_CATALOG_PATH` 指定文件。
+
+- 长晶棒模拟器的端点为 `opc.tcp://localhost:4840`。可在模型下配置晶棒编号 `ns=2;s=ingotNum`（字符串）和服务器时间 `i=2258`（时间）。
+- 创建数据变化订阅计划并勾选这两个点位。发布周期可用 `250 ms`。建实例时选择该模型、计划和端点。
+- 在设备实例行点击**测试**。Gateway 为该次测试连接实例端点，读取计划内点位，并观察四秒的订阅通知。页面显示读取值、最新订阅值、通知数和质量。模型下配置的方法也可以在实例中单独点击调用。
+
+采集计划已持久化，当前通过实例测试按需执行。常驻采集的调度留待运行时接入。
 
 生产部署模板见 `deployments/kubernetes/README.md`。模块边界见 `docs/modules/README.md`。
 
@@ -61,4 +69,4 @@ curl -fsS http://127.0.0.1:8081/api/v1/gateway/opcua/methods/set-string \
 
 每个 SSE 客户端打开一个 OPC UA 数据变更订阅，断开后释放。点位事件包含质量、原始 UA 状态码、接收时间，以及服务端提供的源时间。`intervalMillis` 指定请求的发布周期。可选的 `deadband` 为所有配置点位设置绝对死区，适用于服务端支持该过滤器的数值点位。收到终止性的 `subscription-error` 后可重新打开事件流。如果 OPC UA 会话已断开，需要先重启 Gateway。试点暂未提供事件补发。
 
-方法参数按顺序传入，并显式声明 `UInt32`、`String` 等 UA 标量类型。无入参时使用 `{"arguments":[]}`。响应包含 Call 状态码和带类型的出参，业务结果依据出参中的 `Succeeded` 等字段判断。Gateway 对 Call 只发送一次。Process 编排、权限校验和命令记录留待后续接入。
+方法参数按顺序传入，并显式声明 `UInt32`、`String` 等 UA 标量类型。无入参时使用 `{"arguments":[]}`。响应包含 Call 状态码和带类型的出参，业务结果依据出参中的 `Succeeded` 等字段判断。Gateway 对 Call 只发送一次。生产权限校验和命令记录留待后续接入。

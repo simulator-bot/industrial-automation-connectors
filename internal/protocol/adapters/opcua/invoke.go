@@ -10,14 +10,12 @@ import (
 	"time"
 
 	"github.com/gopcua/opcua/ua"
+	v1 "github.com/simulator-bot/industrial-automation-connectors/internal/contracts/v1"
 )
 
 var ErrInvalidArguments = errors.New("invalid OPC UA method arguments")
 
-type Argument struct {
-	Type  string          `json:"type"`
-	Value json.RawMessage `json:"value"`
-}
+type Argument = v1.OPCUAArgument
 
 type MethodCall struct {
 	ObjectNodeID string     `json:"objectNodeId"`
@@ -80,38 +78,24 @@ func encodeArgument(arg Argument) (*ua.Variant, error) {
 	if len(arg.Value) == 0 || bytes.Equal(bytes.TrimSpace(arg.Value), []byte("null")) {
 		return nil, fmt.Errorf("a non-null value is required")
 	}
-	switch arg.Type {
-	case "Boolean":
-		return scalar[bool](arg.Value)
-	case "SByte":
-		return scalar[int8](arg.Value)
-	case "Byte":
-		return scalar[uint8](arg.Value)
-	case "Int16":
-		return scalar[int16](arg.Value)
-	case "UInt16":
-		return scalar[uint16](arg.Value)
-	case "Int32":
-		return scalar[int32](arg.Value)
-	case "UInt32":
-		return scalar[uint32](arg.Value)
-	case "Int64":
-		return scalar[int64](arg.Value)
-	case "UInt64":
-		return scalar[uint64](arg.Value)
-	case "Float":
-		return scalar[float32](arg.Value)
-	case "Double":
-		return scalar[float64](arg.Value)
-	case "String":
-		return scalar[string](arg.Value)
-	case "DateTime":
-		return scalar[time.Time](arg.Value)
-	case "ByteString":
-		return scalar[[]byte](arg.Value)
-	default:
+	decode, ok := argumentTypes[arg.Type]
+	if !ok {
 		return nil, fmt.Errorf("unsupported scalar type %q", arg.Type)
 	}
+	return decode(arg.Value)
+}
+
+var argumentTypes = map[string]func(json.RawMessage) (*ua.Variant, error){
+	"Boolean": scalar[bool], "SByte": scalar[int8], "Byte": scalar[uint8],
+	"Int16": scalar[int16], "UInt16": scalar[uint16], "Int32": scalar[int32],
+	"UInt32": scalar[uint32], "Int64": scalar[int64], "UInt64": scalar[uint64],
+	"Float": scalar[float32], "Double": scalar[float64], "String": scalar[string],
+	"DateTime": scalar[time.Time], "ByteString": scalar[[]byte],
+}
+
+func SupportsArgumentType(kind string) bool {
+	_, ok := argumentTypes[kind]
+	return ok
 }
 
 func scalar[T any](raw json.RawMessage) (*ua.Variant, error) {

@@ -2,6 +2,7 @@ package process
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -14,20 +15,39 @@ type Server struct {
 	http *httpserver.Server
 }
 
-func NewServer(cfg config.Config, logger *slog.Logger) *Server {
+type Options struct {
+	CatalogPath string
+	GatewayURL  string
+}
+
+func NewServer(cfg config.Config, logger *slog.Logger, opts Options) (*Server, error) {
 	mux := http.NewServeMux()
-	devices := repository.NewMemoryDevices()
+	local := httpserver.IsLoopbackAddress(cfg.HTTPAddress)
+	if !local && (opts.CatalogPath != "" || opts.GatewayURL != "") {
+		return nil, fmt.Errorf("the equipment workbench requires PROCESS_HTTP_ADDR to bind to a loopback IP")
+	}
+	catalog, err := repository.OpenCatalog(opts.CatalogPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCatalog(catalog.Snapshot()); err != nil {
+		return nil, fmt.Errorf("invalid equipment catalog: %w", err)
+	}
+	if local {
+		api, err := newCatalogAPI(catalog, opts.GatewayURL)
+		if err != nil {
+			return nil, err
+		}
+		mux.HandleFunc("GET /api/v1/equipment/configuration", httpserver.LocalOnly(api.get))
+		mux.HandleFunc("PUT /api/v1/equipment/configuration", httpserver.LocalOnly(api.put))
+		mux.HandleFunc("POST /api/v1/equipment/instances/{id}/test", httpserver.LocalOnly(api.test))
+	}
 	mux.HandleFunc("GET /healthz", health(cfg.ServiceName))
 	mux.HandleFunc("GET /readyz", health(cfg.ServiceName))
-	mux.HandleFunc("GET /api/v1/equipment", func(w http.ResponseWriter, r *http.Request) {
-		items, err := devices.List(r.Context())
-		if err != nil {
-			http.Error(w, "equipment query failed", http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	mux.HandleFunc("GET /api/v1/equipment", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"items": catalog.Snapshot().Instances})
 	})
-	return &Server{http: httpserver.New(cfg.ServiceName, cfg.HTTPAddress, mux, logger)}
+	return &Server{http: httpserver.New(cfg.ServiceName, cfg.HTTPAddress, mux, logger)}, nil
 }
 
 func (s *Server) Run() error { return s.http.Run() }

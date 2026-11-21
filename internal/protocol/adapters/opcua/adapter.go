@@ -30,7 +30,7 @@ func (Adapter) Descriptor() protocol.Descriptor {
 }
 
 func (Adapter) Connect(ctx context.Context, cfg protocol.ConnectionConfig) (protocol.Session, error) {
-	endpoint, err := simulatorEndpoint(cfg.Endpoint)
+	endpoint, err := SimulatorEndpoint(cfg.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func (Adapter) Connect(ctx context.Context, cfg protocol.ConnectionConfig) (prot
 	return nil, fmt.Errorf("OPC UA simulator has no anonymous endpoint with SecurityPolicy None")
 }
 
-func simulatorEndpoint(raw string) (string, error) {
+func SimulatorEndpoint(raw string) (string, error) {
 	endpoint, err := url.Parse(raw)
 	if err != nil || endpoint.Scheme != "opc.tcp" || endpoint.Hostname() == "" ||
 		endpoint.User != nil || endpoint.ForceQuery || endpoint.RawQuery != "" || endpoint.Fragment != "" {

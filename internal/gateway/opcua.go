@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -17,29 +16,19 @@ import (
 	v1 "github.com/simulator-bot/industrial-automation-connectors/internal/contracts/v1"
 	"github.com/simulator-bot/industrial-automation-connectors/internal/equipment/model"
 	"github.com/simulator-bot/industrial-automation-connectors/internal/platform/config"
+	"github.com/simulator-bot/industrial-automation-connectors/internal/platform/httpserver"
 	"github.com/simulator-bot/industrial-automation-connectors/internal/protocol"
 	"github.com/simulator-bot/industrial-automation-connectors/internal/protocol/adapters/opcua"
 )
 
-type opcuaPoint struct {
-	ID       string `json:"id"`
-	NodeID   string `json:"nodeId"`
-	DataType string `json:"dataType"`
-}
-
-type opcuaMethod struct {
-	ObjectNodeID string `json:"objectNodeId"`
-	MethodNodeID string `json:"methodNodeId"`
-}
-
 type opcuaConfig struct {
-	Endpoint       string                 `json:"endpoint"`
-	ConnectionID   string                 `json:"connectionId"`
-	DeviceID       string                 `json:"deviceId"`
-	IntervalMillis int                    `json:"intervalMillis"`
-	Deadband       float64                `json:"deadband"`
-	Points         []opcuaPoint           `json:"points"`
-	Methods        map[string]opcuaMethod `json:"methods"`
+	Endpoint       string                    `json:"endpoint"`
+	ConnectionID   string                    `json:"connectionId"`
+	DeviceID       string                    `json:"deviceId"`
+	IntervalMillis int                       `json:"intervalMillis"`
+	Deadband       float64                   `json:"deadband"`
+	Points         []v1.OPCUAPoint           `json:"points"`
+	Methods        map[string]v1.OPCUAMethod `json:"methods"`
 }
 
 type opcuaPilot struct {
@@ -47,12 +36,11 @@ type opcuaPilot struct {
 	gatewayID string
 	session   protocol.Session
 	targets   []string
-	points    map[string]opcuaPoint
+	points    map[string]v1.OPCUAPoint
 }
 
 func openOPCUAPilot(gatewayConfig config.Config, path string, adapter protocol.Adapter) (*opcuaPilot, error) {
-	host, _, err := net.SplitHostPort(gatewayConfig.HTTPAddress)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
+	if !httpserver.IsLoopbackAddress(gatewayConfig.HTTPAddress) {
 		return nil, fmt.Errorf("GATEWAY_HTTP_ADDR must bind to a loopback IP when GATEWAY_OPCUA_CONFIG is set")
 	}
 	file, err := os.Open(path)
@@ -65,6 +53,17 @@ func openOPCUAPilot(gatewayConfig config.Config, path string, adapter protocol.A
 	if err := decodeJSON(file, &cfg); err != nil {
 		return nil, err
 	}
+	pilot, err := newOPCUAPilot(gatewayConfig.ServiceName, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := pilot.connect(context.Background(), adapter); err != nil {
+		return nil, err
+	}
+	return pilot, nil
+}
+
+func newOPCUAPilot(gatewayID string, cfg opcuaConfig) (*opcuaPilot, error) {
 	if cfg.DeviceID == "" || cfg.ConnectionID == "" {
 		return nil, fmt.Errorf("deviceId and connectionId are required")
 	}
@@ -74,7 +73,7 @@ func openOPCUAPilot(gatewayConfig config.Config, path string, adapter protocol.A
 	if len(cfg.Points) == 0 && len(cfg.Methods) == 0 {
 		return nil, fmt.Errorf("at least one point or method is required")
 	}
-	pilot := &opcuaPilot{config: cfg, gatewayID: gatewayConfig.ServiceName, points: make(map[string]opcuaPoint)}
+	pilot := &opcuaPilot{config: cfg, gatewayID: gatewayID, points: make(map[string]v1.OPCUAPoint)}
 	pointIDs := make(map[string]bool)
 	for _, point := range cfg.Points {
 		if point.ID == "" || point.DataType == "" || pointIDs[point.ID] {
@@ -101,13 +100,33 @@ func openOPCUAPilot(gatewayConfig config.Config, path string, adapter protocol.A
 			}
 		}
 	}
-	pilot.session, err = adapter.Connect(context.Background(), protocol.ConnectionConfig{
-		Endpoint: cfg.Endpoint, ConnectionID: cfg.ConnectionID,
-	})
-	if err != nil {
-		return nil, err
-	}
 	return pilot, nil
+}
+
+func (p *opcuaPilot) connect(ctx context.Context, adapter protocol.Adapter) error {
+	var err error
+	p.session, err = adapter.Connect(ctx, protocol.ConnectionConfig{
+		Endpoint: p.config.Endpoint, ConnectionID: p.config.ConnectionID,
+	})
+	return err
+}
+
+func (p *opcuaPilot) subscribe(ctx context.Context) (<-chan protocol.Update, error) {
+	return p.session.Subscribe(ctx, protocol.Subscription{
+		Targets: p.targets, Mode: string(model.SubscriptionOnChange),
+		Interval: time.Duration(p.config.IntervalMillis) * time.Millisecond, Deadband: p.config.Deadband,
+	})
+}
+
+func (p *opcuaPilot) pointEvent(value protocol.Value) v1.PointEvent {
+	point := p.points[value.TargetID]
+	return v1.PointEvent{
+		SchemaVersion: "1", EventID: rand.Text(), GatewayID: p.gatewayID,
+		ConnectionID: p.config.ConnectionID, DeviceID: p.config.DeviceID,
+		PointID: point.ID, Value: value.Value, DataType: point.DataType,
+		Quality: value.Quality, ProtocolStatus: value.ProtocolStatus, Sequence: value.Sequence,
+		SourceTimestamp: value.SourceTimestamp, IngestTimestamp: value.ReceivedAt,
+	}
 }
 
 func (p *opcuaPilot) events(w http.ResponseWriter, r *http.Request) {
@@ -115,10 +134,7 @@ func (p *opcuaPilot) events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no OPC UA points configured", http.StatusNotFound)
 		return
 	}
-	updates, err := p.session.Subscribe(r.Context(), protocol.Subscription{
-		Targets: p.targets, Mode: string(model.SubscriptionOnChange),
-		Interval: time.Duration(p.config.IntervalMillis) * time.Millisecond, Deadband: p.config.Deadband,
-	})
+	updates, err := p.subscribe(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -147,15 +163,7 @@ func (p *opcuaPilot) events(w http.ResponseWriter, r *http.Request) {
 				_ = writeSSE(w, "subscription-error", map[string]string{"error": update.Err.Error()})
 				return
 			}
-			value := update.Value
-			point := p.points[value.TargetID]
-			if err := writeSSE(w, "point", v1.PointEvent{
-				SchemaVersion: "1", EventID: rand.Text(), GatewayID: p.gatewayID,
-				ConnectionID: p.config.ConnectionID, DeviceID: p.config.DeviceID,
-				PointID: point.ID, Value: value.Value, DataType: point.DataType,
-				Quality: value.Quality, ProtocolStatus: value.ProtocolStatus, Sequence: value.Sequence,
-				SourceTimestamp: value.SourceTimestamp, IngestTimestamp: value.ReceivedAt,
-			}); err != nil {
+			if err := writeSSE(w, "point", p.pointEvent(update.Value)); err != nil {
 				return
 			}
 		}
@@ -207,14 +215,9 @@ func (p *opcuaPilot) invoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := json.Marshal(opcua.MethodCall{ObjectNodeID: method.ObjectNodeID, Arguments: input.Arguments})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	result, err := p.session.Invoke(ctx, method.MethodNodeID, payload)
+	result, err := p.callMethod(ctx, method, input.Arguments)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, opcua.ErrInvalidArguments) {
@@ -226,18 +229,12 @@ func (p *opcuaPilot) invoke(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-func localOnly(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = strings.Trim(r.Host, "[]")
-		}
-		if !strings.EqualFold(host, "localhost") && !net.ParseIP(host).IsLoopback() {
-			http.Error(w, "OPC UA pilot requires a loopback Host", http.StatusForbidden)
-			return
-		}
-		handler(w, r)
+func (p *opcuaPilot) callMethod(ctx context.Context, method v1.OPCUAMethod, args []v1.OPCUAArgument) (json.RawMessage, error) {
+	payload, err := json.Marshal(opcua.MethodCall{ObjectNodeID: method.ObjectNodeID, Arguments: args})
+	if err != nil {
+		return nil, err
 	}
+	return p.session.Invoke(ctx, method.MethodNodeID, payload)
 }
 
 func decodeJSON(r io.Reader, dest any) error {

@@ -24,16 +24,20 @@ func NewServer(cfg config.Config, logger *slog.Logger, opcuaConfigPath string) (
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health(cfg.ServiceName))
+	adapter, _ := registry.Get(opcua.Name)
+	if httpserver.IsLoopbackAddress(cfg.HTTPAddress) {
+		tests := opcuaTests{gatewayID: cfg.ServiceName, adapter: adapter, slots: make(chan struct{}, 4)}
+		mux.HandleFunc("POST /api/v1/gateway/opcua/test", httpserver.LocalOnly(tests.handle))
+	}
 	var pilot *opcuaPilot
 	if opcuaConfigPath != "" {
-		adapter, _ := registry.Get(opcua.Name)
 		var err error
 		pilot, err = openOPCUAPilot(cfg, opcuaConfigPath, adapter)
 		if err != nil {
 			return nil, fmt.Errorf("configure OPC UA pilot: %w", err)
 		}
-		mux.HandleFunc("GET /api/v1/gateway/opcua/events", localOnly(pilot.events))
-		mux.HandleFunc("POST /api/v1/gateway/opcua/methods/{method}", localOnly(pilot.invoke))
+		mux.HandleFunc("GET /api/v1/gateway/opcua/events", httpserver.LocalOnly(pilot.events))
+		mux.HandleFunc("POST /api/v1/gateway/opcua/methods/{method}", httpserver.LocalOnly(pilot.invoke))
 	}
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if pilot != nil && pilot.session.Health(r.Context()) != nil {

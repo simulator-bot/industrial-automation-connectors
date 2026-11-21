@@ -14,20 +14,40 @@ The design-docs project owns system architecture and cross-project boundaries. T
 ## Current implementation
 
 The repository now contains Go entrypoints for `cmd/gateway`, `cmd/process`,
-and an isolated `cmd/rule-worker`, plus a Vue 3 + TypeScript + Vite operations
-UI under `frontend/`. Shared equipment models, protocol adapter SPI, and v1
+and an isolated `cmd/rule-worker`, plus a Vue 3 + TypeScript + Vite configuration
+workbench under `frontend/`. Shared equipment models, protocol adapter SPI, and v1
 event/command contracts live under `internal/`; initial Kubernetes manifests
 are under `deployments/kubernetes/base`.
 
 Gateway can connect to a local OPC UA simulator, stream native monitored-item
-notifications, and call configured methods. Process currently uses in-memory
-equipment storage and exposes health checks and an empty equipment list. The
-rule worker is idle pending the CEL runtime.
+notifications, and call configured methods. Process stores device models,
+points, plans and instances and resolves the saved configuration when testing
+an instance. The rule worker is idle pending the CEL runtime.
 
 Run locally with `make run-process` and `make run-gateway` in separate
 terminals. The frontend runs with `cd frontend && npm install && npm run dev`.
 See `README.zh-CN.md` for the Chinese quick start and `docs/modules/README.md`
 for module boundaries.
+
+### Equipment configuration workbench
+
+Run `make run-process` and `make run-gateway` in separate terminals, then run
+`npm install` and `npm run dev` from `frontend/`. Open
+`http://127.0.0.1:5173`. The commands bind Process and Gateway to loopback and
+save equipment configuration to `var/equipment-catalog.json`. Set
+`PROCESS_CATALOG_PATH` for a different file.
+
+Create an OPC UA model, add points with NodeIDs and data types, select those
+points in a data-change collection plan, and bind the plan and model to an
+instance with an endpoint. **Test** opens an independent UA session for that
+instance. It reads the planned points and reports the latest value, quality and
+notification count from a four-second subscription window. Methods defined on
+the model can also be called explicitly from the instance's test panel.
+
+For the local long-ingot simulator, use endpoint `opc.tcp://localhost:4840`,
+point `ns=2;s=ingotNum` (string), and point `i=2258` (time). An example plan
+uses a 250 ms publishing interval. The workbench exposes on-demand tests and
+saves collection plans for later use by the acquisition runtime.
 
 ### Local OPC UA simulator
 
@@ -64,4 +84,4 @@ Method arguments are positional, with explicit scalar UA types. Use
 `{"arguments":[]}` for methods with no inputs. The response includes Call
 status and typed output arguments. Interpret application-level results, such as
 `Succeeded`, from the output arguments. The Gateway does not retry a Call.
-Process orchestration, authorization and command history are future work.
+Production authorization and command history are future work.
